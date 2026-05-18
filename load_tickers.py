@@ -1,13 +1,13 @@
 """
 load_tickers.py — One-time loader for the ticker universe.
 
-Uses FMP's current (post-Aug 2025) v4 API + Wikipedia fallbacks.
-The old v3 sp500_constituent endpoint is retired.
+Uses FMP's current stable API (post-Aug 2025) + Wikipedia fallbacks.
+Legacy v3 batch endpoints are retired; we use stable/ single-symbol calls.
 
-Strategy (in priority order):
-  1. FMP v4 ETF holdings: SPY=S&P500, QQQ=NDX100, DIA=Dow30, MDY=SP400, IJR=SP600
-  2. Wikipedia fallback if ETF holdings return too few symbols
-  3. Hardcoded Dow 30 as last resort
+Strategy:
+  Index membership: ETF holdings (SPY/QQQ/DIA/MDY/IJR) via stable/etf-holder
+  Company profiles: stable/profile?symbol=X (one call per ticker, rate-paced)
+  Fallback for index lists: Wikipedia (no API needed)
 
 Environment:
     FMP_API_KEY    — from FMP dashboard
@@ -35,50 +35,63 @@ if DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
 
 engine = create_engine(DATABASE_URL, pool_pre_ping=True)
-BASE_V3 = "https://financialmodelingprep.com/api/v3"
-BASE_V4 = "https://financialmodelingprep.com/api/v4"
+STABLE = "https://financialmodelingprep.com/stable"
 MIN_MARKET_CAP = 500_000_000
 
 
-def fmp_get(url, params=None):
+def fmp_get(path, params=None, base=STABLE):
+    """GET from FMP. Returns parsed JSON or raises."""
     params = params or {}
     params["apikey"] = FMP_KEY
+    url = f"{base}/{path}"
     for attempt in range(4):
         try:
             r = requests.get(url, params=params, timeout=30)
             if r.status_code == 200:
                 data = r.json()
                 if isinstance(data, dict) and "Error Message" in data:
-                    raise RuntimeError(f"FMP error: {data['Error Message'][:200]}")
+                    msg = data["Error Message"]
+                    if "Legacy" in msg or "legacy" in msg:
+                        raise RuntimeError(f"Legacy endpoint: {path}")
+                    raise RuntimeError(f"FMP error on {path}: {msg[:150]}")
                 return data
             if r.status_code == 429:
-                time.sleep(2 ** attempt)
+                wait = 2 ** attempt
+                print(f"    rate-limited, waiting {wait}s...")
+                time.sleep(wait)
                 continue
             if r.status_code in (401, 403):
-                raise RuntimeError(f"FMP auth error {r.status_code}: {r.text[:200]}")
+                raise RuntimeError(f"FMP auth {r.status_code} on {path}")
             r.raise_for_status()
         except requests.exceptions.RequestException as e:
             if attempt == 3:
                 raise
             time.sleep(2 ** attempt)
-    raise RuntimeError(f"FMP failed after retries: {url}")
+    raise RuntimeError(f"FMP failed after retries: {path}")
 
 
-def fetch_etf_holdings(etf_symbol):
-    """FMP v4 ETF holdings as index proxy."""
+# ---------------------------------------------------------------------------
+# Index constituents via ETF holders
+# ---------------------------------------------------------------------------
+def fetch_etf_symbols(etf_symbol):
+    """stable/etf-holder returns list of {asset, ...}."""
     try:
-        data = fmp_get(f"{BASE_V4}/etf-holdings", params={"symbol": etf_symbol})
+        data = fmp_get("etf-holder", params={"symbol": etf_symbol})
         if not data or not isinstance(data, list):
             return set()
-        symbols = {row.get("asset", "").upper() for row in data if row.get("asset")}
-        print(f"    {etf_symbol}: {len(symbols)} holdings")
-        return symbols
+        syms = {row.get("asset", "").upper() for row in data
+                if row.get("asset") and len(row.get("asset", "")) <= 6}
+        print(f"    {etf_symbol}: {len(syms)} holdings")
+        return syms
     except Exception as e:
         print(f"    {etf_symbol} failed: {e}")
         return set()
 
 
-def fetch_sp500_wikipedia():
+# ---------------------------------------------------------------------------
+# Wikipedia fallbacks (zero API calls)
+# ---------------------------------------------------------------------------
+def wiki_sp500():
     try:
         tables = pd.read_html(
             "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies",
@@ -87,24 +100,25 @@ def fetch_sp500_wikipedia():
         df = tables[0]
         col = next((c for c in df.columns if "symbol" in c.lower()), df.columns[0])
         syms = set(df[col].str.upper().str.replace(".", "-", regex=False))
-        print(f"    Wikipedia S&P500: {len(syms)} symbols")
+        print(f"    Wikipedia S&P500: {len(syms)}")
         return syms
     except Exception as e:
         print(f"    Wikipedia S&P500 failed: {e}")
         return set()
 
 
-def fetch_ndx_wikipedia():
+def wiki_ndx():
     try:
+        # Try multiple table structures Wikipedia uses
         tables = pd.read_html("https://en.wikipedia.org/wiki/Nasdaq-100")
         for t in tables:
-            cols_lower = [c.lower() for c in t.columns]
-            if any("ticker" in c or "symbol" in c for c in cols_lower):
-                col = next(c for c in t.columns if "ticker" in c.lower() or "symbol" in c.lower())
-                syms = set(t[col].dropna().astype(str).str.upper())
-                if len(syms) > 80:
-                    print(f"    Wikipedia NDX: {len(syms)} symbols")
-                    return syms
+            for col in t.columns:
+                if "ticker" in str(col).lower() or "symbol" in str(col).lower():
+                    syms = set(t[col].dropna().astype(str).str.upper().str.strip())
+                    syms = {s for s in syms if 1 < len(s) <= 6 and s.isalpha()}
+                    if len(syms) > 80:
+                        print(f"    Wikipedia NDX: {len(syms)}")
+                        return syms
         return set()
     except Exception as e:
         print(f"    Wikipedia NDX failed: {e}")
@@ -118,28 +132,47 @@ DOW30 = {
 }
 
 
-def fetch_profiles_batch(symbols):
-    profiles = {}
+# ---------------------------------------------------------------------------
+# Profile fetching — one ticker at a time via stable/profile
+# ---------------------------------------------------------------------------
+def fetch_profile(symbol):
+    """Fetch a single ticker's profile. Returns dict or None."""
+    try:
+        data = fmp_get("profile", params={"symbol": symbol})
+        if isinstance(data, list) and data:
+            return data[0]
+        if isinstance(data, dict) and "symbol" in data:
+            return data
+        return None
+    except Exception:
+        return None
+
+
+def fetch_profiles(symbols, sample_size=None):
+    """Fetch profiles for all symbols. If sample_size set, only fetch that many
+    (for testing). Returns dict of symbol -> profile."""
     symbols = sorted(symbols)
-    BATCH = 50
+    if sample_size:
+        symbols = symbols[:sample_size]
+
+    profiles = {}
     total = len(symbols)
-    for i in range(0, total, BATCH):
-        chunk = symbols[i:i + BATCH]
-        try:
-            data = fmp_get(f"{BASE_V3}/profile/{','.join(chunk)}")
-            if isinstance(data, list):
-                for row in data:
-                    sym = row.get("symbol", "").upper()
-                    if sym:
-                        profiles[sym] = row
-        except Exception as e:
-            print(f"  profile batch {i//BATCH+1} failed: {e}")
-        if i > 0 and i % 500 == 0:
-            print(f"  profiles: {i}/{total}...")
-        time.sleep(0.15)
+    print(f"  Fetching {total} profiles (this takes ~{total*0.15/60:.1f} min)...")
+
+    for i, sym in enumerate(symbols, 1):
+        p = fetch_profile(sym)
+        if p:
+            profiles[sym] = p
+        if i % 100 == 0:
+            print(f"  {i}/{total} profiles fetched ({len(profiles)} valid)...")
+        time.sleep(0.15)  # ~6-7 req/sec, well within rate limits
+
     return profiles
 
 
+# ---------------------------------------------------------------------------
+# DB write
+# ---------------------------------------------------------------------------
 def upsert_tickers(rows):
     if not rows:
         return 0
@@ -167,48 +200,62 @@ def upsert_tickers(rows):
     return len(rows)
 
 
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
 def main():
-    print("Loading ticker universe...\n")
+    print("=" * 60)
+    print("Loading ticker universe")
+    print("=" * 60)
 
-    # Step 1: Index constituents
-    print("Step 1: Fetching index constituents...")
-    print("  trying FMP v4 ETF holdings...")
-    sp500  = fetch_etf_holdings("SPY")
-    ndx    = fetch_etf_holdings("QQQ")
-    dow    = fetch_etf_holdings("DIA")
-    sp400  = fetch_etf_holdings("MDY")
-    sp600  = fetch_etf_holdings("IJR")
+    # Step 1: Build index membership sets
+    print("\nStep 1: Fetching index constituents...")
 
+    print("  ETF holder approach (stable/etf-holder):")
+    sp500 = fetch_etf_symbols("SPY")
+    ndx   = fetch_etf_symbols("QQQ")
+    dow   = fetch_etf_symbols("DIA")
+    sp400 = fetch_etf_symbols("MDY")
+    sp600 = fetch_etf_symbols("IJR")
+
+    # Fallback to Wikipedia if ETF holdings too sparse
     if len(sp500) < 400:
-        print("  SPY sparse — trying Wikipedia S&P 500...")
-        sp500 = fetch_sp500_wikipedia()
+        print("  SPY sparse — Wikipedia fallback...")
+        sp500 = wiki_sp500()
+
     if len(ndx) < 90:
-        print("  QQQ sparse — trying Wikipedia NDX...")
-        ndx = fetch_ndx_wikipedia()
+        print("  QQQ sparse — Wikipedia fallback...")
+        ndx = wiki_ndx()
+
     if len(dow) < 25:
         print("  DIA sparse — using hardcoded Dow 30...")
         dow = DOW30
 
     universe = sp500 | ndx | dow | sp400 | sp600
+
+    # Last resort: if everything failed, use Wikipedia + hardcoded Dow
     if len(universe) < 200:
-        print("  All ETF methods sparse — building from Wikipedia only...")
-        sp500 = fetch_sp500_wikipedia()
-        ndx   = fetch_ndx_wikipedia()
+        print("  All ETF methods failed — building from Wikipedia only...")
+        sp500 = wiki_sp500()
+        ndx   = wiki_ndx()
         dow   = DOW30
         universe = sp500 | ndx | dow
         sp400, sp600 = set(), set()
 
-    print(f"\nUnion universe: {len(universe)} unique symbols")
+    print(f"\n  Universe: {len(universe)} unique symbols "
+          f"(SP500={len(sp500)}, NDX={len(ndx)}, DOW={len(dow)}, "
+          f"SP400={len(sp400)}, SP600={len(sp600)})")
 
-    # Step 2: Profiles
-    print("\nStep 2: Fetching company profiles...")
-    profiles = fetch_profiles_batch(sorted(universe))
+    # Step 2: Fetch profiles (one per symbol)
+    print("\nStep 2: Fetching company profiles (stable/profile)...")
+    profiles = fetch_profiles(universe)
     print(f"  Got {len(profiles)} / {len(universe)} profiles")
 
-    # Step 3: Filter
-    print(f"\nStep 3: Applying ${MIN_MARKET_CAP/1e6:.0f}M market cap filter...")
+    # Step 3: Filter and build rows
+    print(f"\nStep 3: Filtering to ${MIN_MARKET_CAP/1e6:.0f}M+ market cap...")
     rows = []
     skipped = {"cap": 0, "inactive": 0, "no_profile": 0}
+
     for sym in sorted(universe):
         p = profiles.get(sym)
         if not p:
@@ -236,31 +283,41 @@ def main():
             "in_dow30":      sym in dow,
             "market_cap_usd": float(mcap),
         })
-    print(f"  Kept {len(rows)} | skipped: cap={skipped['cap']}, "
-          f"inactive={skipped['inactive']}, no_profile={skipped['no_profile']}")
+
+    print(f"  Kept {len(rows)} | "
+          f"skipped cap={skipped['cap']}, "
+          f"inactive={skipped['inactive']}, "
+          f"no_profile={skipped['no_profile']}")
 
     # Step 4: Upsert
-    print(f"\nStep 4: Upserting to database...")
+    print(f"\nStep 4: Writing {len(rows)} tickers to database...")
     n = upsert_tickers(rows)
-    print(f"  Upserted {n} tickers.")
+    print(f"  Done. {n} rows upserted.")
 
     # Summary
     with engine.connect() as con:
         counts = con.execute(text("""
             SELECT COUNT(*) AS total,
-                   COUNT(*) FILTER (WHERE in_sp500) AS sp500,
+                   COUNT(*) FILTER (WHERE in_sp500)    AS sp500,
                    COUNT(*) FILTER (WHERE in_nasdaq100) AS ndx,
-                   COUNT(*) FILTER (WHERE in_dow30) AS dow
+                   COUNT(*) FILTER (WHERE in_dow30)    AS dow,
+                   COUNT(*) FILTER (WHERE in_sp400)    AS sp400,
+                   COUNT(*) FILTER (WHERE in_sp600)    AS sp600
             FROM tickers WHERE is_active
         """)).fetchone()
-        by_sector = pd.read_sql(
-            text("SELECT sector, COUNT(*) n FROM tickers WHERE is_active AND sector IS NOT NULL "
+        top_sectors = pd.read_sql(
+            text("SELECT sector, COUNT(*) n FROM tickers "
+                 "WHERE is_active AND sector IS NOT NULL "
                  "GROUP BY sector ORDER BY n DESC LIMIT 10"),
             con,
         )
-    print(f"\nFinal: {counts[0]} tickers | {counts[1]} S&P500 | {counts[2]} NDX | {counts[3]} Dow")
-    print("\nTop sectors:")
-    print(by_sector.to_string(index=False))
+
+    print(f"\n{'='*60}")
+    print(f"FINAL: {counts[0]} tickers")
+    print(f"  S&P 500: {counts[1]} | NDX: {counts[2]} | Dow: {counts[3]}")
+    print(f"  S&P 400: {counts[4]} | S&P 600: {counts[5]}")
+    print(f"\nTop sectors:")
+    print(top_sectors.to_string(index=False))
 
 
 if __name__ == "__main__":
