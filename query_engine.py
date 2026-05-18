@@ -280,6 +280,173 @@ sector_relative_strength (
 )
 PRIMARY KEY (date, sector_a, sector_b)
 
+-- Political calendar: which party controls each branch of government.
+-- Use for "under Republican/Democratic control" type questions.
+political_calendar (
+    start_date        DATE,
+    end_date          DATE,          -- NULL = currently in effect
+    country           VARCHAR,       -- 'US'
+    body              VARCHAR,       -- 'presidency', 'house', 'senate'
+    controlling_party VARCHAR,       -- 'Republican', 'Democratic'
+    majority_seats    INTEGER,
+    minority_seats    INTEGER,
+    is_divided_govt   BOOLEAN,       -- presidency vs congress split party
+    notes             VARCHAR
+)
+
+-- Earnings revision breadth per sector (weekly snapshot).
+-- net_revision > 0 = more upgrades than downgrades = bullish earnings momentum.
+earnings_revision_breadth (
+    date            DATE,
+    sector          VARCHAR,
+    n_stocks        INTEGER,
+    pct_raised_30d  DOUBLE,    -- % of stocks with EPS estimate raised
+    pct_cut_30d     DOUBLE,    -- % of stocks with EPS estimate cut
+    net_revision    DOUBLE,    -- pct_raised - pct_cut
+    avg_revision_pct DOUBLE
+)
+PRIMARY KEY (date, sector)
+
+-- Additional columns now available in market_indicators:
+--   ppi_yoy          DOUBLE  -- Producer Price Index YoY%
+--   ism_manufacturing DOUBLE -- ISM Manufacturing PMI (50 = neutral)
+--   ism_services      DOUBLE -- ISM Services PMI
+--   credit_spread_hy  DOUBLE -- High yield credit spread in basis points (wider = stress)
+--   dxy               DOUBLE -- US Dollar Index (higher = stronger dollar)
+--   initial_claims    DOUBLE -- Weekly initial jobless claims (thousands)
+--   breakeven_10y     DOUBLE -- 10Y inflation breakeven rate %
+--   put_call_ratio    DOUBLE -- CBOE put/call ratio (>1.2 = fear, <0.7 = complacency)
+--   m2_yoy            DOUBLE -- M2 money supply YoY% growth
+
+-- =============================================================================
+-- PHASE 2 TABLES
+-- =============================================================================
+
+-- Political calendar: party control of US government branches 1993-present.
+-- Use for: "under Republican/Democratic control", "divided government" queries.
+political_calendar (
+    start_date        DATE,
+    end_date          DATE,          -- NULL = currently in effect
+    country           VARCHAR,       -- 'US'
+    body              VARCHAR,       -- 'presidency', 'house', 'senate'
+    controlling_party VARCHAR,       -- 'Republican', 'Democratic'
+    majority_seats    INTEGER,
+    minority_seats    INTEGER,
+    is_divided_govt   BOOLEAN,       -- TRUE when presidency + congress split
+    notes             VARCHAR        -- e.g. 'Clinton', '104th Congress'
+)
+
+-- Insider transactions: SEC Form 4 filings (buys and sells by executives/directors).
+-- Cluster buying (multiple insiders buying same stock) is historically significant.
+insider_transactions (
+    ticker            VARCHAR,
+    date              DATE,
+    insider_name      VARCHAR,
+    role              VARCHAR,       -- 'CEO', 'CFO', 'Director', '10% Owner'
+    transaction_type  VARCHAR,       -- 'Buy', 'Sell', 'Other'
+    shares            DOUBLE,
+    price_per_share   DOUBLE,
+    value_usd         DOUBLE,
+    shares_owned_after DOUBLE,
+    filing_date       DATE
+)
+
+-- Short interest: biweekly/weekly snapshot of short positions.
+-- short_pct_float > 15% = heavily shorted. days_to_cover > 5 = squeeze risk.
+short_interest (
+    ticker          VARCHAR,
+    date            DATE,
+    short_interest  DOUBLE,        -- total shares short
+    short_pct_float DOUBLE,        -- % of float sold short
+    days_to_cover   DOUBLE,        -- short ratio (days to cover at avg volume)
+    change_pct      DOUBLE         -- WoW change in short interest %
+)
+PRIMARY KEY (ticker, date)
+
+-- Analyst estimates: individual analyst ratings and price targets.
+-- For consensus, use fundamentals.analyst_consensus, analyst_target_price.
+analyst_estimates (
+    ticker          VARCHAR,
+    date            DATE,
+    analyst_firm    VARCHAR,
+    action          VARCHAR,       -- 'Upgrade', 'Downgrade', 'Initiate', 'Reiterate'
+    rating_new      VARCHAR,       -- 'Buy', 'Hold', 'Sell', 'Outperform'
+    rating_prior    VARCHAR,
+    target_new      DOUBLE,
+    target_prior    DOUBLE
+)
+PRIMARY KEY (ticker, date, analyst_firm)
+
+-- Commodity prices: daily closes for major commodities.
+commodity_prices (
+    date        DATE,
+    commodity   VARCHAR,           -- 'gold','silver','copper','oil_wti','natural_gas','wheat','corn'
+    price       DOUBLE,
+    currency    VARCHAR,           -- 'USD'
+    unit        VARCHAR            -- 'per_oz','per_lb','per_barrel','per_bushel'
+)
+PRIMARY KEY (date, commodity)
+
+-- Earnings revision breadth: weekly sector-level estimate momentum.
+-- net_revision > 0 = upgrades dominating = bullish earnings momentum.
+earnings_revision_breadth (
+    date            DATE,
+    sector          VARCHAR,
+    n_stocks        INTEGER,
+    pct_raised_30d  DOUBLE,        -- % of stocks with EPS estimate raised
+    pct_cut_30d     DOUBLE,        -- % of stocks with EPS estimate cut
+    net_revision    DOUBLE,        -- pct_raised - pct_cut (positive = bullish)
+    avg_revision_pct DOUBLE
+)
+PRIMARY KEY (date, sector)
+
+-- Sector rotation scores (pairwise). sector_a = destination, sector_b = source.
+-- rotation_score: >= 65 strong signal, 45-65 early signal, < 45 noise.
+sector_relative_strength (
+    date            DATE,
+    sector_a        VARCHAR,
+    sector_b        VARCHAR,
+    rs_ratio_5d     DOUBLE,
+    rs_ratio_20d    DOUBLE,
+    rs_trend_20d    DOUBLE,        -- positive = A accelerating vs B
+    rotation_score  DOUBLE,        -- 0-100 composite
+    signal          VARCHAR,       -- 'strong_into_a','early_into_a','neutral','early_into_b','strong_into_b'
+    score_momentum  DOUBLE,        -- component scores (max: 25,20,20,15,20)
+    score_breadth   DOUBLE,
+    score_rsi       DOUBLE,
+    score_volume    DOUBLE,
+    score_macro     DOUBLE
+)
+PRIMARY KEY (date, sector_a, sector_b)
+
+-- =============================================================================
+-- EXTENDED market_indicators COLUMNS (Phase 2 additions):
+-- ppi_yoy          DOUBLE  -- Producer Price Index YoY% (leads CPI by 2-3 months)
+-- ism_manufacturing DOUBLE -- ISM Manufacturing PMI (>50 = expansion, <50 = contraction)
+-- ism_services      DOUBLE -- ISM Services PMI
+-- credit_spread_hy  DOUBLE -- High yield credit spread bps (>500 = stress, <300 = healthy)
+-- credit_spread_ig  DOUBLE -- Investment grade credit spread bps
+-- dxy               DOUBLE -- US Dollar Index (higher = stronger dollar)
+-- initial_claims    DOUBLE -- Weekly initial jobless claims in thousands (leading indicator)
+-- breakeven_10y     DOUBLE -- 10Y inflation breakeven % (market's inflation expectation)
+-- put_call_ratio    DOUBLE -- CBOE total put/call (>1.2 = fear, <0.7 = complacency)
+-- m2_yoy            DOUBLE -- M2 money supply YoY% growth
+-- gold_price        DOUBLE -- Gold $/oz (safe haven)
+-- copper_price      DOUBLE -- Copper $/lb (economic activity indicator)
+-- oil_price_wti     DOUBLE -- WTI crude $/barrel
+-- copper_gold_ratio DOUBLE -- copper/gold ratio (rising = risk-on, falling = risk-off)
+-- =============================================================================
+
+-- =============================================================================
+-- EXTENDED fundamentals COLUMNS (Phase 2 additions):
+-- analyst_target_price  DOUBLE  -- consensus price target
+-- analyst_target_upside DOUBLE  -- % upside to consensus target
+-- analyst_buy_count     INTEGER -- number of Buy/Outperform ratings
+-- analyst_hold_count    INTEGER -- number of Hold/Neutral ratings
+-- analyst_sell_count    INTEGER -- number of Sell/Underperform ratings
+-- analyst_consensus     VARCHAR -- 'Buy', 'Hold', or 'Sell'
+-- =============================================================================
+
 Now generate SQL for the user's question. Remember: SQL only, no commentary."""
 
 
