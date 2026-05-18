@@ -240,6 +240,46 @@ SELECT
 FROM market_indicators
 WHERE date = (SELECT MAX(date) FROM market_indicators);
 
+-- Sector-level daily aggregates (calculated from daily_bars + tickers).
+-- Use for rotation analysis and sector health queries.
+sector_indicators (
+    date                DATE,
+    sector              VARCHAR,
+    n_stocks            INTEGER,       -- stocks in the aggregate
+    avg_rsi_14          DOUBLE,        -- avg RSI across sector
+    avg_macd_histogram  DOUBLE,        -- positive = momentum building
+    pct_rsi_oversold    DOUBLE,        -- % of stocks RSI < 35
+    pct_rsi_overbought  DOUBLE,        -- % of stocks RSI > 65
+    pct_above_ma50      DOUBLE,        -- breadth: % above 50MA
+    pct_above_ma200     DOUBLE,
+    avg_pct_vs_ma50     DOUBLE,        -- avg distance from 50MA
+    avg_pct_vs_ma200    DOUBLE,
+    avg_return_5d       DOUBLE,        -- avg 5-day return across sector
+    avg_return_20d      DOUBLE,
+    avg_rel_volume      DOUBLE         -- > 1.2 = volume expansion
+)
+PRIMARY KEY (date, sector)
+
+-- Pairwise sector rotation scores. sector_a is the candidate "rotating into" sector.
+-- rotation_score 0-100: >= 65 strong signal, 45-65 early signal, < 45 noise.
+sector_relative_strength (
+    date            DATE,
+    sector_a        VARCHAR,           -- potential rotation destination
+    sector_b        VARCHAR,           -- potential rotation source
+    rs_ratio_5d     DOUBLE,            -- sector_a minus sector_b 5d return
+    rs_ratio_20d    DOUBLE,
+    rs_trend_20d    DOUBLE,            -- positive = A accelerating vs B
+    rotation_score  DOUBLE,            -- 0-100 composite confidence score
+    signal          VARCHAR,           -- 'strong_into_a', 'early_into_a',
+                                       -- 'neutral', 'early_into_b', 'strong_into_b'
+    score_momentum  DOUBLE,            -- RS ratio trend (max 25)
+    score_breadth   DOUBLE,            -- breadth divergence (max 20)
+    score_rsi       DOUBLE,            -- RSI divergence (max 20)
+    score_volume    DOUBLE,            -- volume expansion (max 15)
+    score_macro     DOUBLE             -- macro regime alignment (max 20)
+)
+PRIMARY KEY (date, sector_a, sector_b)
+
 Now generate SQL for the user's question. Remember: SQL only, no commentary."""
 
 
