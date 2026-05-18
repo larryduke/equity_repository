@@ -447,6 +447,33 @@ PRIMARY KEY (date, sector_a, sector_b)
 -- analyst_consensus     VARCHAR -- 'Buy', 'Hold', or 'Sell'
 -- =============================================================================
 
+-- Support / resistance levels detected via 5 methods (pivot, volume cluster,
+-- round number, MA, flipped). Each level has a strength_score 0-100.
+-- strength_tier: 'major' >= 70, 'moderate' 50-69, 'minor' 30-49, 'weak' < 30.
+support_resistance_levels (
+    ticker          VARCHAR,
+    level_price     DOUBLE,
+    level_type      VARCHAR,        -- 'support' or 'resistance'
+    method          VARCHAR,        -- 'pivot','volume_cluster','round_number',
+                                    -- 'moving_avg','flipped_level',
+                                    -- or combos like 'pivot+volume_cluster'
+    touch_count     INTEGER,        -- times price reversed near this level
+    n_strong_touches INTEGER,       -- reversals on above-avg volume
+    last_touch_date DATE,
+    first_touch_date DATE,
+    days_since_last_touch INTEGER,
+    times_held      INTEGER,        -- touches where price reversed away
+    times_broken    INTEGER,        -- touches where price broke through
+    hold_rate       DOUBLE,         -- times_held / touch_count (0-1)
+    avg_volume_at_touches DOUBLE,
+    pct_distance_current DOUBLE,    -- % distance from current price (negative if below)
+    is_active       BOOLEAN,        -- still in play?
+    strength_score  DOUBLE,         -- 0-100 composite confidence
+    strength_tier   VARCHAR,        -- 'major','moderate','minor','weak'
+    calculated_date DATE,
+    lookback_days   INTEGER
+)
+
 Now generate SQL for the user's question. Remember: SQL only, no commentary."""
 
 
