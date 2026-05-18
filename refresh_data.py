@@ -619,6 +619,13 @@ def main():
     refresh_fred(start_market)
     refresh_breadth()
 
+    # Sector rotation signals
+    try:
+        from rotation import run_rotation_refresh
+        run_rotation_refresh(engine)
+    except Exception as e:
+        print(f"\nRotation refresh failed (non-fatal): {e}")
+
     print("\nDone.")
 
 
