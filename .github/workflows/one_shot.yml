@@ -19,6 +19,8 @@ on:
           - 'refresh_macro.py'
           - 'refresh_macro.py --full'
           - 'rotation.py'
+          - 'support_resistance.py'
+          - 'support_resistance.py --limit 50'
 
 jobs:
   run:
