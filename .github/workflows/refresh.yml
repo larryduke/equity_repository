@@ -2,12 +2,15 @@ name: Nightly data refresh
 
 on:
   schedule:
+    # 06:00 UTC = 11pm Pacific / 1am Central / 2am Eastern
+    # Runs after US market close, before any morning user activity.
     - cron: '0 6 * * *'
-  workflow_dispatch:
+  workflow_dispatch:   # also lets you trigger manually
 
 jobs:
   refresh:
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
       - name: Check out code
         uses: actions/checkout@v4
@@ -21,8 +24,9 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Run refresh
+      - name: Run incremental refresh
         env:
-          POLYGON_API_KEY: ${{ secrets.POLYGON_API_KEY }}
-          DATABASE_URL: ${{ secrets.DATABASE_URL }}
-        run: python refresh_data.py
+          FMP_API_KEY:        ${{ secrets.FMP_API_KEY }}
+          DATABASE_URL:       ${{ secrets.DATABASE_URL }}
+          FRED_API_KEY:       ${{ secrets.FRED_API_KEY }}
+        run: python refresh_data.py --incremental
