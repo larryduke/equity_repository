@@ -70,7 +70,29 @@ def fetch_constituent(endpoint, symbol_key="symbol"):
     """Fetch index constituents. Returns set of ticker symbols."""
     try:
         data = fmp_get(endpoint)
-        if data and isinstance(data, list) and len(data) > 5:
+        if not data:
+            print(f"    {endpoint}: empty response")
+            return set()
+        if isinstance(data, dict):
+            print(f"    {endpoint}: dict response keys={list(data.keys())[:5]}")
+            return set()
+        if isinstance(data, list):
+            if len(data) == 0:
+                print(f"    {endpoint}: empty list")
+                return set()
+            if len(data) <= 5:
+                print(f"    {endpoint}: only {len(data)} rows (below threshold), sample={data[0]}")
+                return set()
+            # Check symbol key
+            sample = data[0]
+            available_keys = list(sample.keys())[:8]
+            if symbol_key not in sample:
+                # Try alternate keys
+                for alt in ["symbol", "Symbol", "ticker", "Ticker", "code"]:
+                    if alt in sample:
+                        symbol_key = alt
+                        break
+                print(f"    {endpoint}: using key '{symbol_key}', sample keys={available_keys}")
             syms = {str(row.get(symbol_key, "")).upper()
                     for row in data if row.get(symbol_key)}
             print(f"    {endpoint}: {len(syms)} symbols")
