@@ -10,14 +10,17 @@ on:
         default: 'load_tickers.py'
         options:
           - 'load_tickers.py'
+          - 'fmp_diagnostic.py'
           - 'refresh_data.py --full --limit 50'
           - 'refresh_data.py --full'
+          - 'refresh_data.py --full --years 20'
           - 'refresh_data.py --incremental'
+          - 'rotation.py'
 
 jobs:
   run:
     runs-on: ubuntu-latest
-    timeout-minutes: 360
+    timeout-minutes: 480
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
