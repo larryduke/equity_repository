@@ -10,11 +10,14 @@ on:
         default: 'load_tickers.py'
         options:
           - 'load_tickers.py'
+          - 'load_eu_tickers.py'
           - 'fmp_diagnostic.py'
           - 'refresh_data.py --full --limit 50'
           - 'refresh_data.py --full'
           - 'refresh_data.py --full --years 20'
           - 'refresh_data.py --incremental'
+          - 'refresh_macro.py'
+          - 'refresh_macro.py --full'
           - 'rotation.py'
 
 jobs:
