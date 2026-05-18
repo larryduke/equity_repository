@@ -345,6 +345,8 @@ def upsert_bars(df, ticker, full_replace=False):
 def upsert_earnings(df, ticker):
     if df is None or df.empty:
         return 0
+    # Deduplicate on (ticker, date) — FMP sometimes returns the same event twice
+    df = df.drop_duplicates(subset=["ticker", "date"], keep="first")
     with engine.begin() as con:
         con.execute(text("DELETE FROM earnings_dates WHERE ticker=:t"), {"t": ticker})
         df = df.where(pd.notnull(df), None)
