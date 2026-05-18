@@ -1,0 +1,7 @@
+anthropic>=0.40.0
+yfinance>=0.2.40
+duckdb>=1.0.0
+pandas>=2.0.0
+streamlit>=1.30.0
+python-dotenv>=1.0.0
+polygon-api-client>=1.14.0
