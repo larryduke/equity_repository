@@ -149,8 +149,11 @@ def refresh_fred_series():
         "ICSA":         ("initial_claims",    "level"),
         "T10YIE":       ("breakeven_10y",     "level"),
         "M2SL":         ("m2_yoy",            "yoy"),
-        "NAPM":         ("ism_manufacturing", "level"),
-        "NMFCI":        ("ism_services",      "level"),
+        # ISM series proxies — NAPM/NMFCI were discontinued by FRED.
+        # MANEMP (manufacturing employment) is a reasonable proxy until
+        # we add direct ISM scraping. PAYEMS for services proxy.
+        "MANEMP":       ("ism_manufacturing", "level"),
+        "PAYEMS":       ("ism_services",      "level"),
     }
 
     for series_id, (col, transform) in series.items():
