@@ -194,7 +194,15 @@ def refresh_commodities():
     all_rows = []
     for ticker, (commodity, market_col, unit, currency) in commodities.items():
         try:
-            df = yf.download(ticker, start=START_DATE, progress=False, auto_adjust=True)
+            # yfinance has no native timeout — wrap in a per-call signal-based timeout
+            import signal as _sig
+            def _to(_signum, _frame): raise TimeoutError(f"yfinance {ticker} timed out")
+            _sig.signal(_sig.SIGALRM, _to)
+            _sig.alarm(30)  # 30 second hard limit per commodity
+            try:
+                df = yf.download(ticker, start=START_DATE, progress=False, auto_adjust=True, timeout=20)
+            finally:
+                _sig.alarm(0)
             if df.empty:
                 continue
             if isinstance(df.columns, pd.MultiIndex):
@@ -255,7 +263,14 @@ def refresh_put_call():
     print("  Fetching put/call ratio...")
     try:
         import yfinance as yf
-        pc = yf.download("^PCALL", start=START_DATE, progress=False, auto_adjust=True)
+        import signal as _sig
+        def _to(_signum, _frame): raise TimeoutError("yfinance put/call timed out")
+        _sig.signal(_sig.SIGALRM, _to)
+        _sig.alarm(30)
+        try:
+            pc = yf.download("^PCALL", start=START_DATE, progress=False, auto_adjust=True, timeout=20)
+        finally:
+            _sig.alarm(0)
         if not pc.empty:
             if isinstance(pc.columns, pd.MultiIndex):
                 pc.columns = pc.columns.get_level_values(0)
@@ -304,6 +319,15 @@ def refresh_insider_transactions(days_back=30):
     Pull recent insider transactions from SEC EDGAR.
     Uses the EDGAR full-text search API (free, no key needed).
     """
+    # Early exit if no tickers in DB (skip slow loops on empty table)
+    with engine.connect() as con:
+        ticker_count = con.execute(text(
+            "SELECT COUNT(*) FROM tickers WHERE is_active = TRUE"
+        )).scalar()
+    if not ticker_count:
+        print(f"    No active tickers in DB — skipping insider transactions")
+        return
+
     print("  Fetching insider transactions (SEC EDGAR)...")
 
     # Get active tickers from DB
@@ -635,32 +659,37 @@ def calc_earnings_revision_breadth():
 # Main
 # =============================================================================
 def run_macro_refresh(start_date=START_DATE, full=False):
-    print("\n" + "=" * 60)
-    print("Phase 2 macro + alternative data refresh")
-    print("=" * 60)
+    import sys as _sys
+    def step(msg):
+        print(msg, flush=True)
+        _sys.stdout.flush()
 
-    # FRED series (macro indicators)
+    step("\n" + "=" * 60)
+    step("Phase 2 macro + alternative data refresh")
+    step("=" * 60)
+
+    step("\n[1/7] FRED macro series")
     refresh_fred_series()
 
-    # Commodities + copper/gold ratio
+    step("\n[2/7] Commodities (yfinance, 30s timeout per symbol)")
     refresh_commodities()
 
-    # Put/call ratio
+    step("\n[3/7] Put/call ratio")
     refresh_put_call()
 
-    # Insider transactions (nightly, last 30 days)
+    step("\n[4/7] Insider transactions")
     refresh_insider_transactions(days_back=30 if not full else 365)
 
-    # Short interest (weekly snapshot)
+    step("\n[5/7] Short interest")
     refresh_short_interest()
 
-    # Analyst estimates (recent 90 days)
+    step("\n[6/7] Analyst estimates")
     refresh_analyst_estimates()
 
-    # Earnings revision breadth (calculated)
+    step("\n[7/7] Earnings revision breadth")
     calc_earnings_revision_breadth()
 
-    print("\nPhase 2 macro refresh complete")
+    step("\nPhase 2 macro refresh complete")
 
 
 if __name__ == "__main__":
