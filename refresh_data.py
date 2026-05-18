@@ -627,6 +627,13 @@ def main():
     except Exception as e:
         print(f"\nRotation refresh failed (non-fatal): {e}")
 
+    # Phase 2: macro indicators, commodities, insider data, short interest, analysts
+    try:
+        from refresh_macro import run_macro_refresh
+        run_macro_refresh(full=args.full)
+    except Exception as e:
+        print(f"\nPhase 2 macro refresh failed (non-fatal): {e}")
+
     print("\nDone.")
 
 
