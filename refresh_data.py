@@ -545,7 +545,8 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--full",        action="store_true")
     parser.add_argument("--incremental", action="store_true")
-    parser.add_argument("--years",  type=int, default=5)
+    parser.add_argument("--years",  type=int, default=5,
+                        help='Years of history. Use 20 for full election analysis.')
     parser.add_argument("--limit",  type=int, default=None)
     args = parser.parse_args()
 
