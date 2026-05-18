@@ -1,0 +1,32 @@
+name: One-shot scripts
+
+on:
+  workflow_dispatch:
+    inputs:
+      script:
+        description: 'Script to run'
+        required: true
+        type: choice
+        default: 'load_tickers.py'
+        options:
+          - 'load_tickers.py'
+          - 'refresh_data.py --full --limit 50'
+          - 'refresh_data.py --full'
+          - 'refresh_data.py --incremental'
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+      - run: pip install -r requirements.txt
+      - env:
+          FMP_API_KEY:  ${{ secrets.FMP_API_KEY }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
+        run: python ${{ inputs.script }}
