@@ -304,11 +304,18 @@ def _strip_fences(s):
     return s.strip()
 
 
+def _clean_sql(sql):
+    """Strip trailing semicolons and whitespace. Claude sometimes adds them."""
+    # Remove trailing semicolons (one is fine, just strip it)
+    return sql.strip().rstrip(";").strip()
+
+
 def _validate(sql):
     """Cheap safety guard. Real safety comes from the read-only DB role."""
     if _FORBIDDEN.search(sql):
         raise ValueError("Query contains forbidden keyword")
-    if sql.count(";") > 1:
+    # After stripping the trailing semicolon, there should be no more
+    if sql.count(";") > 0:
         raise ValueError("Multiple statements not allowed")
 
 
@@ -335,6 +342,7 @@ def generate_sql(client, question, error_context=None):
 
 def execute_sql(engine, sql, timeout_s=20):
     """Run the SQL and return a DataFrame. Raises on error."""
+    sql = _clean_sql(sql)   # strip trailing semicolons before validation
     _validate(sql)
     with engine.connect() as con:
         # Per-query statement timeout as a belt-and-suspenders defense.
