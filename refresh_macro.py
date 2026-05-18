@@ -75,7 +75,7 @@ def fetch_fred(series_id, start=START_DATE):
         df["value"] = pd.to_numeric(df["value"], errors="coerce")
         return df[["date", "value"]].dropna()
     except Exception as e:
-        print(f"    FRED {series_id} failed: {e}")
+        print(f"    FRED {series_id} failed: {e}", flush=True)
         return pd.DataFrame()
 
 
@@ -136,10 +136,10 @@ def fmp_get(path, params=None):
 # =============================================================================
 def refresh_fred_series():
     if not FRED_KEY:
-        print("  FRED_API_KEY not set — skipping FRED series")
+        print("  FRED_API_KEY not set — skipping FRED series", flush=True)
         return
 
-    print("  Fetching FRED macro series...")
+    print("  Fetching FRED macro series...", flush=True)
 
     series = {
         "PPIACO":       ("ppi_yoy",          "yoy"),
@@ -166,7 +166,7 @@ def refresh_fred_series():
             raw = raw.dropna()
         df = to_daily(raw)
         n = upsert_market_col(df, col)
-        print(f"    {series_id} → {col}: {n} rows")
+        print(f"    {series_id} → {col}: {n} rows", flush=True)
         time.sleep(0.3)
 
 
@@ -174,11 +174,11 @@ def refresh_fred_series():
 # 2. Commodity prices via yfinance
 # =============================================================================
 def refresh_commodities():
-    print("  Fetching commodity prices (yfinance)...")
+    print("  Fetching commodity prices (yfinance)...", flush=True)
     try:
         import yfinance as yf
     except ImportError:
-        print("    yfinance not available")
+        print("    yfinance not available", flush=True)
         return
 
     commodities = {
@@ -220,13 +220,13 @@ def refresh_commodities():
             if market_col:
                 mi_df = df.rename(columns={"price": "value"})[["date", "value"]]
                 n = upsert_market_col(mi_df, market_col)
-                print(f"    {commodity}: {n} rows → market_indicators.{market_col}")
+                print(f"    {commodity}: {n} rows → market_indicators.{market_col}", flush=True)
             else:
-                print(f"    {commodity}: {len(df)} rows → commodity_prices only")
+                print(f"    {commodity}: {len(df)} rows → commodity_prices only", flush=True)
 
             time.sleep(0.5)
         except Exception as e:
-            print(f"    {ticker} failed: {e}")
+            print(f"    {ticker} failed: {e}", flush=True)
 
     if all_rows:
         combined = pd.concat(all_rows, ignore_index=True)
@@ -238,10 +238,10 @@ def refresh_commodities():
             """), {"cutoff": date.today() - timedelta(days=400)})
             combined.to_sql("commodity_prices", con, if_exists="append",
                            index=False, method="multi", chunksize=500)
-        print(f"    {len(combined)} commodity rows written")
+        print(f"    {len(combined)} commodity rows written", flush=True)
 
     # Calculate copper/gold ratio
-    print("  Calculating copper/gold ratio...")
+    print("  Calculating copper/gold ratio...", flush=True)
     with engine.begin() as con:
         con.execute(text("""
             UPDATE market_indicators mi
@@ -253,14 +253,14 @@ def refresh_commodities():
               AND cp.price > 0 AND gp.price > 0
               AND mi.date = cp.date
         """))
-    print("    copper/gold ratio updated")
+    print("    copper/gold ratio updated", flush=True)
 
 
 # =============================================================================
 # 3. Put/call ratio
 # =============================================================================
 def refresh_put_call():
-    print("  Fetching put/call ratio...")
+    print("  Fetching put/call ratio...", flush=True)
     try:
         import yfinance as yf
         import signal as _sig
@@ -279,10 +279,10 @@ def refresh_put_call():
             pc["value"] = pd.to_numeric(pc["Close"], errors="coerce")
             result = pc[["date", "value"]].dropna()
             n = upsert_market_col(result, "put_call_ratio")
-            print(f"    {n} put/call rows")
+            print(f"    {n} put/call rows", flush=True)
             return
     except Exception as e:
-        print(f"    yfinance put/call failed: {e}")
+        print(f"    yfinance put/call failed: {e}", flush=True)
 
     # CBOE direct download fallback
     try:
@@ -303,12 +303,12 @@ def refresh_put_call():
                     result = df[["date", "value"]].dropna()
                     if not result.empty:
                         n = upsert_market_col(result, "put_call_ratio")
-                        print(f"    {n} put/call rows from CBOE")
+                        print(f"    {n} put/call rows from CBOE", flush=True)
                         return
             except Exception:
                 continue
     except Exception as e:
-        print(f"    put/call all sources failed: {e}")
+        print(f"    put/call all sources failed: {e}", flush=True)
 
 
 # =============================================================================
@@ -325,10 +325,10 @@ def refresh_insider_transactions(days_back=30):
             "SELECT COUNT(*) FROM tickers WHERE is_active = TRUE"
         )).scalar()
     if not ticker_count:
-        print(f"    No active tickers in DB — skipping insider transactions")
+        print(f"    No active tickers in DB — skipping insider transactions", flush=True)
         return
 
-    print("  Fetching insider transactions (SEC EDGAR)...")
+    print("  Fetching insider transactions (SEC EDGAR)...", flush=True)
 
     # Get active tickers from DB
     with engine.connect() as con:
@@ -337,7 +337,7 @@ def refresh_insider_transactions(days_back=30):
         )).fetchall()]
 
     if not tickers:
-        print("    no tickers loaded yet")
+        print("    no tickers loaded yet", flush=True)
         return
 
     # Use SEC EDGAR company facts API for Form 4 data
@@ -351,7 +351,7 @@ def refresh_insider_transactions(days_back=30):
 
     # Use FMP if available (more structured data)
     if FMP_KEY:
-        print("    using FMP for insider data...")
+        print("    using FMP for insider data...", flush=True)
         for i, ticker in enumerate(tickers[:200]):  # limit for rate control
             try:
                 data = fmp_get("insider-trading", params={"symbol": ticker, "limit": 20})
@@ -412,10 +412,10 @@ def refresh_insider_transactions(days_back=30):
                 time.sleep(0.15)
             except Exception as e:
                 if i < 5:
-                    print(f"    {ticker} insider failed: {e}")
+                    print(f"    {ticker} insider failed: {e}", flush=True)
                 continue
 
-    print(f"    {inserted} insider transactions inserted")
+    print(f"    {inserted} insider transactions inserted", flush=True)
 
 
 # =============================================================================
@@ -423,10 +423,10 @@ def refresh_insider_transactions(days_back=30):
 # =============================================================================
 def refresh_short_interest():
     if not FMP_KEY:
-        print("  Short interest: FMP_API_KEY required, skipping")
+        print("  Short interest: FMP_API_KEY required, skipping", flush=True)
         return
 
-    print("  Fetching short interest (FMP)...")
+    print("  Fetching short interest (FMP)...", flush=True)
 
     with engine.connect() as con:
         tickers = [r[0] for r in con.execute(text(
@@ -467,10 +467,10 @@ def refresh_short_interest():
             time.sleep(0.15)
         except Exception as e:
             if i < 5:
-                print(f"    {ticker} short interest failed: {e}")
+                print(f"    {ticker} short interest failed: {e}", flush=True)
             continue
 
-    print(f"    {inserted} short interest rows")
+    print(f"    {inserted} short interest rows", flush=True)
 
     # Write to fundamentals table as well (most current reading)
     with engine.begin() as con:
@@ -492,10 +492,10 @@ def refresh_short_interest():
 # =============================================================================
 def refresh_analyst_estimates():
     if not FMP_KEY:
-        print("  Analyst estimates: FMP_API_KEY required, skipping")
+        print("  Analyst estimates: FMP_API_KEY required, skipping", flush=True)
         return
 
-    print("  Fetching analyst estimates (FMP)...")
+    print("  Fetching analyst estimates (FMP)...", flush=True)
 
     with engine.connect() as con:
         tickers = [r[0] for r in con.execute(text(
@@ -554,10 +554,10 @@ def refresh_analyst_estimates():
             time.sleep(0.15)
         except Exception as e:
             if i < 5:
-                print(f"    {ticker} analyst failed: {e}")
+                print(f"    {ticker} analyst failed: {e}", flush=True)
             continue
 
-    print(f"    {inserted} analyst estimate rows")
+    print(f"    {inserted} analyst estimate rows", flush=True)
 
     # Update consensus in fundamentals
     with engine.begin() as con:
@@ -603,7 +603,7 @@ def refresh_analyst_estimates():
 # 7. Earnings revision breadth
 # =============================================================================
 def calc_earnings_revision_breadth():
-    print("  Calculating earnings revision breadth...")
+    print("  Calculating earnings revision breadth...", flush=True)
     try:
         with engine.connect() as con:
             df = pd.read_sql(text("""
@@ -637,7 +637,7 @@ def calc_earnings_revision_breadth():
             """), con)
 
         if df.empty:
-            print("    insufficient fundamentals snapshots yet")
+            print("    insufficient fundamentals snapshots yet", flush=True)
             return
 
         df["net_revision"] = df["pct_raised_30d"] - df["pct_cut_30d"]
@@ -650,9 +650,9 @@ def calc_earnings_revision_breadth():
             ))
             df.to_sql("earnings_revision_breadth", con, if_exists="append",
                       index=False, method="multi", chunksize=200)
-        print(f"    {len(df)} revision breadth rows")
+        print(f"    {len(df)} revision breadth rows", flush=True)
     except Exception as e:
-        print(f"    earnings revision breadth failed: {e}")
+        print(f"    earnings revision breadth failed: {e}", flush=True)
 
 
 # =============================================================================
