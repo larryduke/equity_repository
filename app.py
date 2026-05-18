@@ -1,4 +1,5 @@
 """
+import streamlit as st
 app.py — Streamlit chat UI. Routes user questions to Claude, which picks
 the right scenario function, runs it, and writes the answer.
 
@@ -14,7 +15,7 @@ from scenarios import SCENARIO_REGISTRY
 
 load_dotenv()
 
-client = Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+client = Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY") or st.secrets.get("ANTHROPIC_API_KEY"))
 MODEL = "claude-sonnet-4-5"  # fast + cheap; bump to opus if you want more nuanced replies
 
 # Describe each scenario function as a tool that Claude can call
