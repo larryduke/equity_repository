@@ -634,6 +634,37 @@ def main():
     except Exception as e:
         print(f"\nPhase 2 macro refresh failed (non-fatal): {e}")
 
+    # Support / resistance levels (recalculate weekly on full, daily on incremental)
+    try:
+        from support_resistance import (
+            get_active_tickers, get_ticker_bars,
+            detect_levels_for_ticker, upsert_levels,
+        )
+        from datetime import date as _date
+        print("\nDetecting support/resistance levels...")
+        today = _date.today()
+        sr_tickers = get_active_tickers()
+        if args.limit:
+            sr_tickers = sr_tickers[:args.limit]
+        n_ok = n_levels = 0
+        for i, tkr in enumerate(sr_tickers, 1):
+            try:
+                df = get_ticker_bars(tkr)
+                if df.empty or len(df) < 100:
+                    continue
+                lvls = detect_levels_for_ticker(tkr, df, today)
+                upsert_levels(tkr, lvls)
+                n_ok += 1
+                n_levels += len(lvls)
+                if i % 100 == 0:
+                    print(f"  S/R: [{i}/{len(sr_tickers)}] {n_levels} levels so far")
+            except Exception as e:
+                if i < 3:
+                    print(f"  S/R {tkr}: {e}")
+        print(f"  S/R complete: {n_ok} tickers, {n_levels} levels")
+    except Exception as e:
+        print(f"\nSupport/resistance failed (non-fatal): {e}")
+
     print("\nDone.")
 
 
