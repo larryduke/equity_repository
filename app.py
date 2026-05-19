@@ -455,35 +455,143 @@ if "pending_question" in st.session_state:
 else:
     pending = None
 
+def render_friendly_error(error_info, question, sql):
+    """Render a clean, styled error message instead of a raw traceback."""
+    headline = error_info.get("headline", "Something went wrong")
+    body = error_info.get("body", "")
+    err_type = error_info.get("type", "generic")
+
+    # Icon hint per type
+    type_label = {
+        "timeout": "Query timeout",
+        "sql": "Query couldn't be built",
+        "connection": "Connection issue",
+        "generic": "Unable to answer",
+    }.get(err_type, "Issue")
+
+    html = f"""
+    <div style="
+        background: rgba(218, 80, 80, 0.06);
+        border: 1px solid rgba(218, 80, 80, 0.25);
+        border-radius: 12px;
+        padding: 20px 22px;
+        margin: 12px 0;
+    ">
+      <div style="
+          font-size: 11px;
+          letter-spacing: 0.1em;
+          text-transform: uppercase;
+          color: #DA5050;
+          font-weight: 500;
+          margin-bottom: 8px;
+      ">{type_label}</div>
+      <div style="
+          font-size: 18px;
+          font-weight: 500;
+          color: var(--text-color, inherit);
+          margin-bottom: 8px;
+          line-height: 1.35;
+      ">{headline}</div>
+      <div style="
+          font-size: 14px;
+          line-height: 1.6;
+          color: var(--text-color, inherit);
+          opacity: 0.78;
+      ">{body}</div>
+      <div style="
+          margin-top: 14px;
+          padding-top: 12px;
+          border-top: 1px solid rgba(218, 80, 80, 0.15);
+          font-size: 12px;
+          color: var(--text-color, inherit);
+          opacity: 0.55;
+      ">Try a similar question with different wording, or retry — sometimes
+         it's a transient issue. If it keeps failing, the data needed
+         may not exist yet for that scope.</div>
+    </div>
+    """
+    st.markdown(html, unsafe_allow_html=True)
+
+
 # Render past Q&A
 for entry in st.session_state.history:
     st.markdown(f"<div class='qa-divider'></div>", unsafe_allow_html=True)
     st.markdown(f"**You asked:** _{entry['question']}_")
-    render_response(entry["response"], entry["question"])
-    with st.expander("SQL"):
-        st.code(entry.get("sql", ""), language="sql")
-        if "elapsed_ms" in entry:
-            st.caption(f"{entry['elapsed_ms']} ms")
+
+    # Render either the successful response or a styled error
+    if entry.get("error"):
+        render_friendly_error(entry["error"], entry["question"], entry.get("sql", ""))
+    elif entry.get("response"):
+        render_response(entry["response"], entry["question"])
+
+    # Only show SQL expander if there was SQL to show
+    if entry.get("sql"):
+        with st.expander("SQL"):
+            st.code(entry.get("sql", ""), language="sql")
+            if entry.get("elapsed_ms"):
+                st.caption(f"{entry['elapsed_ms']} ms")
 
 # Chat input
 typed = st.chat_input("Ask anything about historical stock behavior…")
 question = pending or typed
 
 if question:
-    with st.spinner("Running query…"):
-        result = run_query(question, client, engine)
-    sql = result.get("sql", "")
-    df = result.get("df")
-    err = result.get("error")
+    error_for_history = None
+    response = None
+    sql = ""
 
-    with st.spinner("Formatting response…"):
-        response = format_response(client, question, sql, df, error=err)
+    try:
+        with st.spinner("Running query…"):
+            result = run_query(question, client, engine)
+        sql = result.get("sql", "")
+        df = result.get("df")
+        err = result.get("error")
+
+        with st.spinner("Formatting response…"):
+            response = format_response(client, question, sql, df, error=err)
+
+    except Exception as e:
+        # Translate raw exceptions into clean error responses
+        msg = str(e)
+        # Detect common error types and give helpful messages
+        if "timeout" in msg.lower() or "statement_timeout" in msg.lower():
+            error_for_history = {
+                "type": "timeout",
+                "headline": "That query took too long",
+                "body": "The database timed out before completing this query. "
+                        "Try narrowing the scope — fewer tickers, a shorter "
+                        "date range, or a more specific question.",
+            }
+        elif "syntax error" in msg.lower() or "does not exist" in msg.lower():
+            error_for_history = {
+                "type": "sql",
+                "headline": "I couldn't write valid SQL for that",
+                "body": "The query I tried to generate didn't compile against "
+                        "the database. This sometimes happens with ambiguous "
+                        "questions — try rephrasing more specifically.",
+            }
+        elif "connection" in msg.lower() or "operationalerror" in msg.lower():
+            error_for_history = {
+                "type": "connection",
+                "headline": "Couldn't reach the database",
+                "body": "The connection to the data store failed. This is "
+                        "usually temporary — retry in a moment.",
+            }
+        else:
+            error_for_history = {
+                "type": "generic",
+                "headline": "Something went wrong with that question",
+                "body": "I couldn't complete this analysis. The most common "
+                        "fixes: try rephrasing the question more specifically, "
+                        "or simplify the time range or ticker set.",
+            }
 
     st.session_state.history.append({
         "question": question,
         "response": response,
+        "error": error_for_history,
         "sql": sql,
-        "elapsed_ms": result.get("elapsed_ms"),
+        "elapsed_ms": result.get("elapsed_ms") if response else None,
     })
     st.rerun()
 
