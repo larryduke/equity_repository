@@ -474,6 +474,34 @@ support_resistance_levels (
     lookback_days   INTEGER
 )
 
+
+-- =============================================================================
+-- DATA COVERAGE NOTES (READ CAREFULLY before writing queries)
+-- =============================================================================
+-- Different macro series have different historical depth on FRED:
+--   * fed_funds_rate, ten_year_yield, two_year_yield, cpi_yoy, unemployment:
+--     daily/monthly from 1990s — deep history available
+--   * ppi_yoy: daily back to 1990s
+--   * dxy, breakeven_10y: daily back to 2003-2006
+--   * credit_spread_hy (BAMLH0A0HYM2): daily back to ~2008 only
+--   * credit_spread_ig (BAMLC0A0CM): daily back to ~2008 only
+--   * initial_claims: weekly back to 1967
+--   * m2_yoy: monthly back to 1980s
+--   * ism_manufacturing, ism_services: proxies via MANEMP/PAYEMS, deep history
+--   * put_call_ratio: daily back to ~2007
+--   * commodities (gold/silver/copper/oil/etc): daily back to ~2000
+--   * vix_close: daily back to 1990
+--
+-- Stock price data (daily_bars) goes back to 2006 on average.
+-- Earnings_dates back to ~2010.
+-- Fundamentals are current snapshots (rolling, not historical depth).
+--
+-- WHEN A USER ASKS for historical patterns requiring data that may not be
+-- present (e.g. "credit spreads above 500bps historically"), the SQL should
+-- ALWAYS return any matching rows even if very few, and the response should
+-- honestly note when the sample is small or the data window is limited
+-- rather than claiming "no matching data."
+
 Now generate SQL for the user's question. Remember: SQL only, no commentary."""
 
 
