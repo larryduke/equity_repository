@@ -1,13 +1,16 @@
 """
-enrich_fundamentals.py — Backfills the columns in `fundamentals` that
-stable/profile doesn't provide (P/E forward, PEG, EV/EBITDA, ROE, margins, etc).
+enrich_fundamentals.py — Backfills fundamental ratios into the `fundamentals` table.
 
-Pulls from FMP stable endpoints:
-  - stable/ratios-ttm
-  - stable/key-metrics-ttm
+Based on actual FMP stable endpoint responses (verified via fmp_field_diagnostic.py):
 
-Run nightly or on-demand. Idempotent. Skips tickers that already have
-a recent enrichment.
+  stable/ratios-ttm       — returns priceToEarningsRatioTTM, priceToBookRatioTTM,
+                           netProfitMarginTTM, etc. with `TTM` suffix.
+  stable/key-metrics-ttm  — returns enterpriseValueTTM, evToEBITDATTM,
+                           returnOnEquityTTM, etc.
+  stable/price-target-consensus — returns targetConsensus, targetHigh, targetLow
+  stable/income-statement — quarterly actuals (used elsewhere to derive surprises)
+
+Run nightly or on-demand. Idempotent.
 
 Environment:
     FMP_API_KEY
@@ -18,7 +21,7 @@ import sys
 import time
 import requests
 import pandas as pd
-from datetime import date, timedelta
+from datetime import date
 from sqlalchemy import create_engine, text
 from dotenv import load_dotenv
 
@@ -30,8 +33,8 @@ if not FMP_KEY:
     sys.exit("ERROR: FMP_API_KEY not set")
 if DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
-
 engine = create_engine(DATABASE_URL, pool_pre_ping=True)
+
 STABLE = "https://financialmodelingprep.com/stable"
 
 
@@ -41,7 +44,7 @@ def fmp_get(path, params=None):
     url = f"{STABLE}/{path}"
     for attempt in range(3):
         try:
-            r = requests.get(url, params=params, timeout=30)
+            r = requests.get(url, params=params, timeout=20)
             if r.status_code == 200:
                 data = r.json()
                 if isinstance(data, dict) and "Error Message" in data:
@@ -61,64 +64,85 @@ def safe_float(v):
         return None
     try:
         f = float(v)
-        if f != f:  # NaN check
-            return None
-        if abs(f) > 1e15:
+        if f != f or abs(f) > 1e15:
             return None
         return f
     except (TypeError, ValueError):
         return None
 
 
-def fetch_ratios_and_metrics(ticker):
-    """Pull both ratios-ttm and key-metrics-ttm, merge into one dict."""
+def fetch_enrichment(ticker):
+    """Pull ratios-ttm + key-metrics-ttm + price-target-consensus,
+    merge into one flat dict with our DB column names."""
     out = {}
 
-    # Ratios TTM
-    ratios = fmp_get("ratios-ttm", params={"symbol": ticker})
-    if ratios:
-        row = ratios[0] if isinstance(ratios, list) and ratios else (ratios if isinstance(ratios, dict) else {})
-        out["pe_trailing"]   = safe_float(row.get("priceEarningsRatioTTM") or row.get("peRatioTTM"))
-        out["price_to_sales"] = safe_float(row.get("priceToSalesRatioTTM"))
-        out["price_to_book"]  = safe_float(row.get("priceToBookRatioTTM"))
-        out["ev_ebitda"]      = safe_float(row.get("enterpriseValueOverEBITDATTM"))
-        out["dividend_yield"] = safe_float(row.get("dividendYielTTM") or row.get("dividendYieldTTM"))
-        out["payout_ratio"]   = safe_float(row.get("payoutRatioTTM"))
-        out["profit_margin"]  = safe_float(row.get("netProfitMarginTTM"))
+    # --- ratios-ttm: the verified field names from diagnostic ---
+    r = fmp_get("ratios-ttm", params={"symbol": ticker})
+    if r and isinstance(r, list) and r:
+        row = r[0]
+        out["pe_trailing"]      = safe_float(row.get("priceToEarningsRatioTTM"))
+        out["price_to_sales"]   = safe_float(row.get("priceToSalesRatioTTM"))
+        out["price_to_book"]    = safe_float(row.get("priceToBookRatioTTM"))
+        out["peg_ratio"]        = safe_float(row.get("priceToEarningsGrowthRatioTTM"))
+        out["profit_margin"]    = safe_float(row.get("netProfitMarginTTM"))
         out["operating_margin"] = safe_float(row.get("operatingProfitMarginTTM"))
-        out["return_on_equity"] = safe_float(row.get("returnOnEquityTTM"))
-        out["debt_to_equity"] = safe_float(row.get("debtEquityRatioTTM"))
-        out["current_ratio"]  = safe_float(row.get("currentRatioTTM"))
+        out["gross_margin"]     = safe_float(row.get("grossProfitMarginTTM"))
+        out["debt_to_equity"]   = safe_float(row.get("debtToEquityRatioTTM"))
+        out["current_ratio"]    = safe_float(row.get("currentRatioTTM"))
+        out["quick_ratio"]      = safe_float(row.get("quickRatioTTM"))
+        out["dividend_yield"]   = safe_float(row.get("dividendYieldTTM"))
+        out["payout_ratio"]     = safe_float(row.get("dividendPayoutRatioTTM"))
 
-    # Key metrics TTM
-    km = fmp_get("key-metrics-ttm", params={"symbol": ticker})
-    if km:
-        row = km[0] if isinstance(km, list) and km else (km if isinstance(km, dict) else {})
-        out["enterprise_value"] = safe_float(row.get("enterpriseValueTTM"))
-        out["peg_ratio"]        = safe_float(row.get("pegRatioTTM"))
-        out["pe_forward"]       = safe_float(row.get("forwardPETTM") or row.get("peRatioForwardTTM"))
-        # if pe_forward still missing, try the analyst estimates path
-        if out.get("revenue_growth_yoy") is None:
-            out["revenue_growth_yoy"] = safe_float(row.get("revenuePerShareGrowthTTM"))
+    # --- key-metrics-ttm: enterprise value and yields ---
+    k = fmp_get("key-metrics-ttm", params={"symbol": ticker})
+    if k and isinstance(k, list) and k:
+        row = k[0]
+        out["enterprise_value"]      = safe_float(row.get("enterpriseValueTTM"))
+        out["ev_ebitda"]             = safe_float(row.get("evToEBITDATTM"))
+        out["ev_sales"]              = safe_float(row.get("evToSalesTTM"))
+        out["return_on_equity"]      = safe_float(row.get("returnOnEquityTTM"))
+        out["return_on_assets"]      = safe_float(row.get("returnOnAssetsTTM"))
+        out["return_on_invested_cap"] = safe_float(row.get("returnOnInvestedCapitalTTM"))
+        out["fcf_yield"]             = safe_float(row.get("freeCashFlowYieldTTM"))
+        out["earnings_yield"]        = safe_float(row.get("earningsYieldTTM"))
+        out["net_debt_to_ebitda"]    = safe_float(row.get("netDebtToEBITDATTM"))
+
+    # --- price-target-consensus: analyst price targets ---
+    pt = fmp_get("price-target-consensus", params={"symbol": ticker})
+    if pt and isinstance(pt, list) and pt:
+        row = pt[0]
+        out["analyst_target_price"] = safe_float(row.get("targetConsensus"))
+        out["analyst_target_high"]  = safe_float(row.get("targetHigh"))
+        out["analyst_target_low"]   = safe_float(row.get("targetLow"))
 
     return out
 
 
-def fetch_forward_pe_from_estimates(ticker):
-    """If ratios didn't return pe_forward, try analyst-estimates endpoint."""
-    data = fmp_get("analyst-estimates", params={"symbol": ticker, "limit": 1})
-    if not data or not isinstance(data, list):
-        return None
-    row = data[0]
-    # Forward P/E = current_price / next_year_eps_estimate
-    # Not directly given; would need price * shares / forward earnings
-    return None  # leave None if not in main endpoints
-
-
 def main():
     print("=" * 60)
-    print("Enriching fundamentals (ratios-ttm + key-metrics-ttm)")
+    print("Enriching fundamentals (verified field names)")
     print("=" * 60)
+
+    # Add columns that don't yet exist on the table
+    print("\nEnsuring all enrichment columns exist on fundamentals table...")
+    new_cols = [
+        ("gross_margin",          "DOUBLE PRECISION"),
+        ("quick_ratio",           "DOUBLE PRECISION"),
+        ("ev_sales",              "DOUBLE PRECISION"),
+        ("return_on_assets",      "DOUBLE PRECISION"),
+        ("return_on_invested_cap", "DOUBLE PRECISION"),
+        ("fcf_yield",             "DOUBLE PRECISION"),
+        ("earnings_yield",        "DOUBLE PRECISION"),
+        ("net_debt_to_ebitda",    "DOUBLE PRECISION"),
+        ("analyst_target_high",   "DOUBLE PRECISION"),
+        ("analyst_target_low",    "DOUBLE PRECISION"),
+    ]
+    with engine.begin() as con:
+        for col, typ in new_cols:
+            con.execute(text(
+                f"ALTER TABLE fundamentals ADD COLUMN IF NOT EXISTS {col} {typ}"
+            ))
+    print("  columns ready")
 
     # Get list of active tickers
     with engine.connect() as con:
@@ -129,32 +153,25 @@ def main():
     if not tickers:
         sys.exit("No active tickers")
 
-    print(f"\nProcessing {len(tickers)} tickers...")
-    print("This will take ~3-4 minutes given FMP rate limits.\n")
+    print(f"\nProcessing {len(tickers)} tickers (~{len(tickers)*0.5/60:.1f} min)...\n")
 
     today = date.today()
     n_ok = n_skip = n_fail = 0
 
     for i, ticker in enumerate(tickers, 1):
         try:
-            metrics = fetch_ratios_and_metrics(ticker)
+            metrics = fetch_enrichment(ticker)
             if not metrics or all(v is None for v in metrics.values()):
                 n_skip += 1
-                if i <= 5:
-                    print(f"  [{i}/{len(tickers)}] {ticker}: no metrics returned", flush=True)
+                if i <= 3:
+                    print(f"  [{i}/{len(tickers)}] {ticker}: no data", flush=True)
                 time.sleep(0.15)
                 continue
 
-            metrics["ticker"] = ticker
-            metrics["date"] = today
-
             with engine.begin() as con:
-                # Build dynamic update for whatever fields we got
                 set_clauses = []
                 params = {"ticker": ticker, "date": today}
                 for col, val in metrics.items():
-                    if col in ("ticker", "date"):
-                        continue
                     if val is None:
                         continue
                     set_clauses.append(f"{col} = :{col}")
@@ -164,7 +181,6 @@ def main():
                     n_skip += 1
                     continue
 
-                # Upsert with new columns
                 cols = list(params.keys())
                 placeholders = ", ".join(f":{c}" for c in cols)
                 col_names = ", ".join(cols)
@@ -189,20 +205,23 @@ def main():
 
     print(f"\n  Done. {n_ok} enriched | {n_skip} skipped | {n_fail} failed")
 
-    # Verify
+    # Verify coverage
     with engine.connect() as con:
         verify = pd.read_sql(text("""
             SELECT
                 COUNT(*) FILTER (WHERE pe_trailing IS NOT NULL) AS has_pe_trailing,
-                COUNT(*) FILTER (WHERE pe_forward IS NOT NULL) AS has_pe_forward,
                 COUNT(*) FILTER (WHERE ev_ebitda IS NOT NULL) AS has_ev_ebitda,
                 COUNT(*) FILTER (WHERE profit_margin IS NOT NULL) AS has_profit_margin,
                 COUNT(*) FILTER (WHERE return_on_equity IS NOT NULL) AS has_roe,
+                COUNT(*) FILTER (WHERE analyst_target_price IS NOT NULL) AS has_target,
+                COUNT(*) FILTER (WHERE peg_ratio IS NOT NULL) AS has_peg,
                 COUNT(*) AS total
             FROM fundamentals
             WHERE date = (SELECT MAX(date) FROM fundamentals)
         """), con)
-    print(f"\nLatest snapshot coverage:\n{verify.to_string(index=False)}")
+
+    print(f"\nLatest snapshot coverage:")
+    print(verify.to_string(index=False))
 
 
 if __name__ == "__main__":
