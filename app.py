@@ -302,6 +302,54 @@ RENDERERS = {
 }
 
 
+def render_llm_fallback_block(llm):
+    """Render the AI Knowledge fallback panel."""
+    answer_text = llm.get("answer", "")
+    what_data = llm.get("what_data_would_help", "")
+    answer_type = llm.get("answer_type", "")
+    type_labels = {
+        "conceptual": "Conceptual question",
+        "stock_specific": "Stock-specific",
+        "macro_general": "Macro / general",
+        "unanswerable": "Best effort",
+    }
+    type_label = type_labels.get(answer_type, "AI knowledge")
+    extra = ""
+    if what_data:
+        extra = (
+            '<div style="margin-top:14px;padding-top:12px;'
+            'border-top:1px solid rgba(180,130,60,0.15);font-size:11px;'
+            'color:var(--text-color,inherit);opacity:0.6;">'
+            '<strong style="opacity:0.8;">What data would give a definitive '
+            f'answer:</strong> {what_data}</div>'
+        )
+    st.markdown(f"""
+        <div style="
+            background: rgba(180, 130, 60, 0.05);
+            border: 1px solid rgba(180, 130, 60, 0.25);
+            border-radius: 12px;
+            padding: 20px 22px;
+            margin: 20px 0 12px;
+        ">
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px;">
+            <div style="font-size:10px;letter-spacing:0.12em;text-transform:uppercase;
+                color:rgb(180,130,60);font-weight:600;
+                background:rgba(180,130,60,0.12);padding:3px 8px;border-radius:4px;">
+              AI Knowledge
+            </div>
+            <div style="font-size:11px;color:var(--text-color,inherit);opacity:0.6;">
+              not from your database · {type_label}
+            </div>
+          </div>
+          <div style="font-size:14px;line-height:1.7;
+              color:var(--text-color,inherit);opacity:0.92;white-space:pre-wrap;">
+            {answer_text}
+          </div>
+          {extra}
+        </div>
+    """, unsafe_allow_html=True)
+
+
 def render_response(resp, question):
     st.markdown(f"<div class='insight-headline'>{resp.get('headline', '')}</div>",
                 unsafe_allow_html=True)
@@ -313,6 +361,37 @@ def render_response(resp, question):
             renderer(comp)
         else:
             st.warning(f"Unknown component type: {ctype}")
+
+    # If response has an attached LLM fallback (e.g. empty SQL result),
+    # render it below the components.
+    llm = resp.get("llm_fallback")
+    if llm and llm.get("answer"):
+        render_llm_fallback_block(llm)
+
+    # NEW: Conclusion synthesis — the most important part
+    conclusion = resp.get("conclusion")
+    if conclusion:
+        st.markdown(f"""
+            <div style="
+                background: rgba(70, 130, 200, 0.06);
+                border-left: 3px solid rgba(70, 130, 200, 0.6);
+                border-radius: 6px;
+                padding: 16px 20px;
+                margin: 18px 0 8px;
+                font-size: 15px;
+                line-height: 1.65;
+            ">
+              <div style="
+                  font-size: 10px;
+                  letter-spacing: 0.12em;
+                  text-transform: uppercase;
+                  color: rgba(70, 130, 200, 0.95);
+                  font-weight: 600;
+                  margin-bottom: 8px;
+              ">Bottom line</div>
+              {conclusion}
+            </div>
+        """, unsafe_allow_html=True)
 
     caveat = resp.get("caveat")
     if caveat:
@@ -456,18 +535,22 @@ else:
     pending = None
 
 def render_friendly_error(error_info, question, sql):
-    """Render a clean, styled error message instead of a raw traceback."""
-    headline = error_info.get("headline", "Something went wrong")
-    body = error_info.get("body", "")
-    err_type = error_info.get("type", "generic")
+    """Render a clean, styled error message — with rephrasing suggestions if available."""
+    headline    = error_info.get("headline", "Something went wrong")
+    body        = error_info.get("body", "")
+    err_type    = error_info.get("type", "generic")
+    diagnosis   = error_info.get("diagnosis")
+    rephrasings = error_info.get("rephrasings") or []
 
-    # Icon hint per type
     type_label = {
         "timeout": "Query timeout",
         "sql": "Query couldn't be built",
         "connection": "Connection issue",
         "generic": "Unable to answer",
     }.get(err_type, "Issue")
+
+    # Use diagnosis as the headline if we have a smart one, otherwise the generic
+    display_headline = diagnosis if diagnosis else headline
 
     html = f"""
     <div style="
@@ -486,31 +569,97 @@ def render_friendly_error(error_info, question, sql):
           margin-bottom: 8px;
       ">{type_label}</div>
       <div style="
-          font-size: 18px;
+          font-size: 16px;
           font-weight: 500;
           color: var(--text-color, inherit);
-          margin-bottom: 8px;
-          line-height: 1.35;
-      ">{headline}</div>
+          margin-bottom: 6px;
+          line-height: 1.4;
+      ">{display_headline}</div>
       <div style="
-          font-size: 14px;
-          line-height: 1.6;
+          font-size: 13px;
+          line-height: 1.55;
           color: var(--text-color, inherit);
-          opacity: 0.78;
-      ">{body}</div>
-      <div style="
-          margin-top: 14px;
-          padding-top: 12px;
-          border-top: 1px solid rgba(218, 80, 80, 0.15);
-          font-size: 12px;
-          color: var(--text-color, inherit);
-          opacity: 0.55;
-      ">Try a similar question with different wording, or retry — sometimes
-         it's a transient issue. If it keeps failing, the data needed
-         may not exist yet for that scope.</div>
+          opacity: 0.7;
+      ">{body if not diagnosis else "Try one of the rephrased questions below — they're more likely to return results."}</div>
     </div>
     """
     st.markdown(html, unsafe_allow_html=True)
+
+    # If we have rephrased suggestions, show them as clickable buttons
+    if rephrasings:
+        st.markdown("""
+            <div style="
+                font-size: 11px;
+                letter-spacing: 0.08em;
+                text-transform: uppercase;
+                color: var(--text-color, inherit);
+                opacity: 0.6;
+                margin: 16px 0 8px;
+                font-weight: 500;
+            ">Try one of these instead</div>
+        """, unsafe_allow_html=True)
+
+        for i, rephrased in enumerate(rephrasings):
+            key = f"reph_{abs(hash(question + rephrased))}_{i}"
+            if st.button(rephrased, key=key, use_container_width=True):
+                st.session_state.pending_question = rephrased
+                st.rerun()
+
+    # If we have an LLM fallback answer, show it CLEARLY LABELED as AI knowledge
+    llm = error_info.get("llm_fallback")
+    if llm and llm.get("answer"):
+        answer_text = llm["answer"]
+        what_data = llm.get("what_data_would_help", "")
+        answer_type = llm.get("answer_type", "")
+
+        type_labels = {
+            "conceptual": "Conceptual question",
+            "stock_specific": "Stock-specific",
+            "macro_general": "Macro / general",
+            "unanswerable": "Best effort",
+        }
+        type_label = type_labels.get(answer_type, "AI knowledge")
+
+        st.markdown(f"""
+            <div style="
+                background: rgba(180, 130, 60, 0.05);
+                border: 1px solid rgba(180, 130, 60, 0.25);
+                border-radius: 12px;
+                padding: 20px 22px;
+                margin: 20px 0 12px;
+            ">
+              <div style="
+                  display: flex;
+                  align-items: center;
+                  gap: 8px;
+                  margin-bottom: 12px;
+              ">
+                <div style="
+                    font-size: 10px;
+                    letter-spacing: 0.12em;
+                    text-transform: uppercase;
+                    color: rgb(180, 130, 60);
+                    font-weight: 600;
+                    background: rgba(180, 130, 60, 0.12);
+                    padding: 3px 8px;
+                    border-radius: 4px;
+                ">AI Knowledge</div>
+                <div style="
+                    font-size: 11px;
+                    color: var(--text-color, inherit);
+                    opacity: 0.6;
+                ">not from your database · {type_label}</div>
+              </div>
+              <div style="
+                  font-size: 14px;
+                  line-height: 1.7;
+                  color: var(--text-color, inherit);
+                  opacity: 0.92;
+                  white-space: pre-wrap;
+              ">{answer_text}</div>
+              {'<div style="margin-top:14px;padding-top:12px;border-top:1px solid rgba(180,130,60,0.15);font-size:11px;color:var(--text-color,inherit);opacity:0.6;"><strong style="opacity:0.8;">What data would give a definitive answer:</strong> ' + what_data + '</div>' if what_data else ''}
+            </div>
+        """, unsafe_allow_html=True)
 
 
 # Render past Q&A
@@ -546,9 +695,28 @@ if question:
         sql = result.get("sql", "")
         df = result.get("df")
         err = result.get("error")
+        rephrasings_from_engine = result.get("rephrasings") or []
+        diagnosis_from_engine = result.get("diagnosis")
 
-        with st.spinner("Formatting response…"):
-            response = format_response(client, question, sql, df, error=err)
+        # If the query engine returned rephrasings, SQL couldn't be built.
+        # Show diagnosis + rephrasings + LLM fallback all together.
+        llm_fallback_data = result.get("llm_fallback")
+        if rephrasings_from_engine or llm_fallback_data:
+            error_for_history = {
+                "type": "sql",
+                "headline": "I couldn't write valid SQL for that",
+                "body": "Try one of the rephrased questions below.",
+                "diagnosis": diagnosis_from_engine,
+                "rephrasings": rephrasings_from_engine,
+                "llm_fallback": llm_fallback_data,
+            }
+            response = None
+        else:
+            llm_fb = result.get("llm_fallback")  # may be set when df is empty
+            with st.spinner("Formatting response…"):
+                response = format_response(
+                    client, question, sql, df, error=err, llm_fallback=llm_fb
+                )
 
     except Exception as e:
         # Translate raw exceptions into clean error responses
@@ -585,6 +753,14 @@ if question:
                         "fixes: try rephrasing the question more specifically, "
                         "or simplify the time range or ticker set.",
             }
+
+    # If run_query came back with rephrasings (SQL build failed cleanly),
+    # promote them into the error_for_history so the renderer can show them.
+    if response is None and 'result' in dir() and result and result.get("rephrasings"):
+        if not error_for_history:
+            error_for_history = {"type": "sql"}
+        error_for_history["diagnosis"]   = result.get("diagnosis")
+        error_for_history["rephrasings"] = result.get("rephrasings")
 
     st.session_state.history.append({
         "question": question,
