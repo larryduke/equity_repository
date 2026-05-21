@@ -24,6 +24,7 @@ on:
           - 'assign_subsectors.py'
           - 'enrich_fundamentals.py'
           - 'fetch_insider_and_short.py'
+          - 'fmp_field_diagnostic.py'
 
 jobs:
   run:
