@@ -422,17 +422,26 @@ def load_macro_history():
     """
     with engine.connect() as con:
         df = pd.read_sql(text(sql), con)
-    df = df.dropna(subset=cols, how="any")  # require all 8 present
+    # Require AT LEAST 5 of the 8 components to be present (not all 8)
+    # so we can match across the full history despite credit spreads / DXY / etc
+    # starting later.
+    df["_present_count"] = df[cols].notna().sum(axis=1)
+    df = df[df["_present_count"] >= 5].copy()
+    df = df.drop(columns=["_present_count"])
     return df
 
 
 def normalize_vectors(df):
-    """Z-score each column using its historical median and IQR (robust)."""
+    """Z-score each column using its historical median and IQR (robust).
+    Missing values stay as NaN — distance calc skips them per-pair."""
     cols = [c[0] for c in VECTOR_COMPONENTS]
     normed = df.copy()
     for c in cols:
-        med = df[c].median()
-        q75, q25 = df[c].quantile(0.75), df[c].quantile(0.25)
+        valid = df[c].dropna()
+        if len(valid) == 0:
+            continue
+        med = valid.median()
+        q75, q25 = valid.quantile(0.75), valid.quantile(0.25)
         iqr = max(q75 - q25, 1e-6)
         normed[c] = (df[c] - med) / iqr
     return normed
@@ -466,7 +475,17 @@ def find_analogues(today=None, top_n=10):
 
     other_vecs = history[cols].values.astype(float)
     diffs = other_vecs - today_vec
-    weighted_sq = (diffs ** 2) * weights
+    # Mask NaN pairs: if either today or analogue is missing a dimension, skip it
+    nan_mask = np.isnan(diffs)
+    diffs_clean = np.where(nan_mask, 0, diffs)
+    # Per-row, only weight the dimensions actually present
+    weight_matrix = np.broadcast_to(weights, diffs.shape).copy()
+    weight_matrix[nan_mask] = 0
+    # Reweight: scale up to compensate for missing dims (so distance is comparable)
+    row_weight_sums = weight_matrix.sum(axis=1, keepdims=True)
+    row_weight_sums = np.where(row_weight_sums < 0.5, 1.0, row_weight_sums)  # avoid div0
+    weight_matrix_norm = weight_matrix / row_weight_sums
+    weighted_sq = (diffs_clean ** 2) * weight_matrix_norm
     distances = np.sqrt(weighted_sq.sum(axis=1))
 
     # Convert distance to similarity score 0-100
@@ -665,7 +684,10 @@ def build_market_regime_section(client, today):
 
     prose = call_claude_for_prose(client, "market_regime", context)
     if not prose:
+        print(f"    market regime prose generation returned None", flush=True)
+        print(f"    context was: {json.dumps(context, default=str)[:500]}", flush=True)
         return
+    print(f"    market regime headline: {prose.get('headline', '(none)')}", flush=True)
 
     with engine.begin() as con:
         con.execute(text("""
@@ -709,18 +731,21 @@ def build_setup_of_day_section(client, today):
         # Try bullish first
         top = pd.read_sql(text("""
             SELECT * FROM dashboard_lists
-            WHERE list_date = :d AND list_type = 'bullish' AND composite_score >= 65
+            WHERE list_date = :d AND list_type = 'bullish'
             ORDER BY composite_score DESC LIMIT 1
         """), con, params={"d": today})
-        if top.empty:
+        if top.empty or top.iloc[0]["composite_score"] < 50:
             top = pd.read_sql(text("""
                 SELECT * FROM dashboard_lists
-                WHERE list_date = :d AND list_type = 'bearish' AND composite_score >= 65
+                WHERE list_date = :d AND list_type = 'bearish'
                 ORDER BY composite_score DESC LIMIT 1
             """), con, params={"d": today})
         if top.empty:
-            print("    no qualifying setup today (no score ≥ 65)")
+            print("    no setup of day candidates")
             return
+        # log which we picked
+        chosen_score = top.iloc[0]["composite_score"]
+        print(f"    picking {top.iloc[0]['ticker']} with score {chosen_score}", flush=True)
 
         # Get S/R for context
         ticker = top.iloc[0]["ticker"]
@@ -753,7 +778,9 @@ def build_setup_of_day_section(client, today):
 
     prose = call_claude_for_prose(client, "setup_of_day", context)
     if not prose:
+        print(f"    setup_of_day prose generation returned None", flush=True)
         return
+    print(f"    setup headline: {prose.get('headline', '(none)')}", flush=True)
 
     levels_json = json.dumps(context["key_levels"], default=str)
 
@@ -808,8 +835,13 @@ def build_rotation_section(client, today):
             ORDER BY rotation_score DESC LIMIT 1
         """), con)
 
-    if top.empty or top.iloc[0]["rotation_score"] < 55:
-        print("    no rotation crossed threshold (55)")
+    if top.empty:
+        print("    no rotation data available")
+        return
+    rot_score = top.iloc[0]["rotation_score"] or 0
+    print(f"    top rotation: {top.iloc[0]['sector_a']} into {top.iloc[0]['sector_b']} at {rot_score}", flush=True)
+    if rot_score < 45:
+        print("    rotation score below 45 — skipping section")
         return
 
     row = top.iloc[0]
@@ -828,7 +860,9 @@ def build_rotation_section(client, today):
     }
     prose = call_claude_for_prose(client, "rotation_in_motion", context)
     if not prose:
+        print(f"    rotation prose generation returned None", flush=True)
         return
+    print(f"    rotation headline: {prose.get('headline', '(none)')}", flush=True)
 
     with engine.begin() as con:
         con.execute(text("""
