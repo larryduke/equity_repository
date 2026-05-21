@@ -42,4 +42,5 @@ jobs:
           FMP_API_KEY:  ${{ secrets.FMP_API_KEY }}
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: python ${{ inputs.script }}
