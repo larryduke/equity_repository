@@ -33,6 +33,22 @@ if DATABASE_URL.startswith("postgres://"):
 
 engine = create_engine(DATABASE_URL, pool_pre_ping=True)
 
+
+def _json_safe(obj):
+    """Recursively replace NaN/Inf with None so JSON serialization is valid.
+    Postgres JSON columns reject NaN."""
+    import math
+    if isinstance(obj, dict):
+        return {k: _json_safe(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_json_safe(v) for v in obj]
+    if isinstance(obj, float):
+        if math.isnan(obj) or math.isinf(obj):
+            return None
+        return obj
+    return obj
+
+
 # Lazy import — only when prose generation is needed
 def get_claude_client():
     if not ANTHROPIC_KEY:
@@ -333,8 +349,8 @@ def build_lists(today=None):
                     "cn": row.get("company_name"),
                     "sc": float(row[score_col]), "st": tier,
                     "rs": reason,
-                    "cj": json.dumps(comps),
-                    "sj": json.dumps(signals),
+                    "cj": json.dumps(_json_safe(comps)),
+                    "sj": json.dumps(_json_safe(signals)),
                     "cp": float(row["current_price"]) if pd.notnull(row.get("current_price")) else None,
                     "mc": float(row["market_cap"]) if pd.notnull(row.get("market_cap")) else None,
                 })
@@ -554,8 +570,8 @@ def find_analogues(today=None, top_n=10):
                 )
             """), {
                 "td": today, "ad": a_date, "ss": float(row["similarity"]),
-                "tvj": json.dumps(today_vector_json),
-                "avj": json.dumps(analogue_vector_json),
+                "tvj": json.dumps(_json_safe(today_vector_json)),
+                "avj": json.dumps(_json_safe(analogue_vector_json)),
                 "r30": r30, "r90": r90, "r180": r180,
                 "al": label, "rl": regime, "rk": i + 1,
             })
@@ -616,7 +632,7 @@ def call_claude_for_prose(client, section_type, data_context):
 
     user_msg = (
         f"Section type: {section_type}\n\n"
-        f"Data context:\n{json.dumps(data_context, default=str, indent=2)}\n\n"
+        f"Data context:\n{json.dumps(_json_safe(data_context), default=str, indent=2)}\n\n"
         f"Write the section now."
     )
 
@@ -685,7 +701,7 @@ def build_market_regime_section(client, today):
     prose = call_claude_for_prose(client, "market_regime", context)
     if not prose:
         print(f"    market regime prose generation returned None", flush=True)
-        print(f"    context was: {json.dumps(context, default=str)[:500]}", flush=True)
+        print(f"    context was: {json.dumps(_json_safe(context), default=str)[:500]}", flush=True)
         return
     print(f"    market regime headline: {prose.get('headline', '(none)')}", flush=True)
 
@@ -718,7 +734,7 @@ def build_market_regime_section(client, today):
             "cs": prose.get("confidence_score"),
             "hn": prose.get("historical_n"),
             "hr": prose.get("hit_rate_pct"),
-            "mj": json.dumps(context),
+            "mj": json.dumps(_json_safe(context)),
             "mn": prose.get("methodology_note"),
         })
     print(f"    written: {prose.get('headline')}")
@@ -782,7 +798,7 @@ def build_setup_of_day_section(client, today):
         return
     print(f"    setup headline: {prose.get('headline', '(none)')}", flush=True)
 
-    levels_json = json.dumps(context["key_levels"], default=str)
+    levels_json = json.dumps(_json_safe(context["key_levels"]), default=str)
 
     with engine.begin() as con:
         con.execute(text("""
@@ -816,7 +832,7 @@ def build_setup_of_day_section(client, today):
             "pt": ticker,
             "ps": context["sector"],
             "lj": levels_json,
-            "mj": json.dumps(context, default=str),
+            "mj": json.dumps(_json_safe(context), default=str),
             "mn": prose.get("methodology_note"),
         })
     print(f"    written: {prose.get('headline')}")
@@ -892,7 +908,7 @@ def build_rotation_section(client, today):
             "ws": prose.get("watch_signal"),
             "cs": prose.get("confidence_score"),
             "ps": row["sector_a"],
-            "mj": json.dumps(context),
+            "mj": json.dumps(_json_safe(context)),
             "mn": prose.get("methodology_note"),
         })
     print(f"    written: {prose.get('headline')}")
