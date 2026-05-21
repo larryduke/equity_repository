@@ -21,6 +21,9 @@ on:
           - 'rotation.py'
           - 'support_resistance.py'
           - 'support_resistance.py --limit 50'
+          - 'assign_subsectors.py'
+          - 'enrich_fundamentals.py'
+          - 'fetch_insider_and_short.py'
 
 jobs:
   run:
