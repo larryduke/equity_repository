@@ -573,19 +573,163 @@ def execute_sql(engine, sql, timeout_s=20):
     return df
 
 
+REPHRASE_PROMPT = """The user asked a finance database a question, but the
+SQL generator couldn't produce a working query. Look at:
+
+1. WHAT the user wanted (the question)
+2. WHAT was tried (the failed SQL)
+3. WHY it failed (the error)
+
+Then propose 3 alternative phrasings that the user could ask instead.
+The rephrasings must:
+- Stay close to the user's actual intent
+- Be more specific or narrower in scope where the original was too broad
+- Use entities (tickers, sectors, dates) that exist in the schema
+- Each be a complete question the user could click and re-ask
+
+The database holds:
+- US stocks (S&P 500, NDX, Dow, ~100 popular mid-caps) plus some EU indices
+- 20 years of daily prices and indicators (RSI, MACD, MAs, etc.)
+- Earnings history back to ~2010
+- Sector rotation scores, support/resistance levels
+- Macro indicators (VIX, FRED data) back to 2000
+- Election dates, recessions, Fed cycles
+- Composite scores for bullish/bearish setups
+
+Return JSON only, no preamble:
+{
+  "diagnosis": "<one sentence on why the original failed in plain English>",
+  "rephrasings": [
+    "<rephrased question 1>",
+    "<rephrased question 2>",
+    "<rephrased question 3>"
+  ]
+}
+"""
+
+
+LLM_FALLBACK_PROMPT = """The user asked a finance question that the
+database couldn't answer (either no data exists, or SQL couldn't be built).
+You're now answering from general knowledge as a final fallback.
+
+CRITICAL: This response will be clearly labeled to the user as "AI knowledge
+(not from the database)." Be honest about that limitation.
+
+Rules:
+- Hedged-observational tone. Never recommend buy/sell/hold/DCA.
+- 2-3 short paragraphs maximum.
+- If the question is about a SPECIFIC TICKER and you don't have current/recent
+  data, say so explicitly. Give general context only.
+- If the question is conceptual or educational (e.g. "what is the put/call ratio"),
+  answer it directly and clearly.
+- Always end by noting what specific data WOULD have answered this in the
+  database if it existed (helps the user understand what's possible).
+
+Return JSON only:
+{
+  "answer": "<your 2-3 paragraph answer>",
+  "answer_type": "conceptual" | "stock_specific" | "macro_general" | "unanswerable",
+  "what_data_would_help": "<short note on what database data would give a definitive answer>"
+}
+"""
+
+
+def llm_fallback(client, question, sql_attempted=None, error=None):
+    """When SQL fails or returns nothing, fall back to general LLM knowledge."""
+    context = (f"USER QUESTION:\n{question}\n\n"
+               f"SQL TRIED (failed): {sql_attempted[:300] if sql_attempted else 'none'}\n"
+               f"ERROR: {error[:200] if error else 'no data matched'}\n\n"
+               f"Now answer from general knowledge.")
+    try:
+        resp = client.messages.create(
+            model=MODEL,
+            max_tokens=1200,
+            system=LLM_FALLBACK_PROMPT,
+            messages=[{"role": "user", "content": context}],
+        )
+        raw = "".join(b.text for b in resp.content if b.type == "text").strip()
+        if raw.startswith("```"):
+            parts = raw.split("```", 2)
+            raw = parts[1] if len(parts) > 1 else raw
+            if raw.startswith("json"):
+                raw = raw[4:]
+            raw = raw.strip()
+            if raw.endswith("```"):
+                raw = raw[:-3].strip()
+        import json as _json
+        parsed = _json.loads(raw)
+        return {
+            "answer":              parsed.get("answer", ""),
+            "answer_type":         parsed.get("answer_type", "unanswerable"),
+            "what_data_would_help": parsed.get("what_data_would_help", ""),
+            "is_llm_fallback":     True,
+        }
+    except Exception as e:
+        return {
+            "answer": f"I couldn't answer this from the database or from general knowledge. ({e})",
+            "answer_type": "unanswerable",
+            "what_data_would_help": "",
+            "is_llm_fallback": True,
+        }
+
+
+def suggest_rephrasings(client, question, failed_sql, error):
+    """When SQL generation fails, suggest 3 alternative phrasings."""
+    user_msg = (
+        f"USER ASKED:\n{question}\n\n"
+        f"FAILED SQL:\n{failed_sql}\n\n"
+        f"ERROR:\n{error[:500]}\n\n"
+        f"Now produce the JSON with diagnosis and 3 rephrasings."
+    )
+    try:
+        resp = client.messages.create(
+            model=MODEL,
+            max_tokens=600,
+            system=REPHRASE_PROMPT,
+            messages=[{"role": "user", "content": user_msg}],
+        )
+        raw = "".join(b.text for b in resp.content if b.type == "text").strip()
+        # Strip code fences
+        if raw.startswith("```"):
+            parts = raw.split("```", 2)
+            raw = parts[1] if len(parts) > 1 else raw
+            if raw.startswith("json"):
+                raw = raw[4:]
+            raw = raw.strip()
+            if raw.endswith("```"):
+                raw = raw[:-3].strip()
+        import json as _json
+        parsed = _json.loads(raw)
+        return {
+            "diagnosis": parsed.get("diagnosis", "The query couldn't be built."),
+            "rephrasings": parsed.get("rephrasings", [])[:3],
+        }
+    except Exception as e:
+        return {
+            "diagnosis": "The query couldn't be built and a rephrasing couldn't "
+                         "be generated either. Try a more specific question.",
+            "rephrasings": [],
+        }
+
+
 def answer(question, client, engine):
     """The full loop. Returns dict with: question, sql, df, error (if any)."""
     sql = generate_sql(client, question)
     started = time.time()
     try:
         df = execute_sql(engine, sql)
-        return {
+        # If SQL succeeded but returned no rows, attach an LLM fallback
+        # so the user gets a useful response anyway.
+        result = {
             "question": question,
             "sql": sql,
             "df": df,
             "error": None,
             "elapsed_ms": int((time.time() - started) * 1000),
         }
+        if df is not None and df.empty:
+            result["llm_fallback"] = llm_fallback(client, question, sql, "no rows matched")
+        return result
     except (SQLAlchemyError, ValueError) as e:
         # One retry
         try:
@@ -601,10 +745,18 @@ def answer(question, client, engine):
                 "retried": True,
             }
         except Exception as e2:
+            # SQL retry also failed.
+            # 1. Get rephrasings to offer the user
+            suggestions = suggest_rephrasings(client, question, sql, str(e2))
+            # 2. Also get a best-effort LLM fallback answer
+            fallback = llm_fallback(client, question, sql, str(e2))
             return {
                 "question": question,
                 "sql": sql,
                 "df": None,
                 "error": f"Query failed: {e2}",
+                "diagnosis": suggestions["diagnosis"],
+                "rephrasings": suggestions["rephrasings"],
+                "llm_fallback": fallback,
                 "elapsed_ms": int((time.time() - started) * 1000),
             }
