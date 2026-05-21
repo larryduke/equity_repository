@@ -788,7 +788,12 @@ def build_setup_of_day_section(client, today):
         "current_price": float(setup_row["current_price"]) if pd.notnull(setup_row.get("current_price")) else None,
         "composite_score": float(setup_row["composite_score"]),
         "reason": setup_row.get("reason"),
-        "components": json.loads(setup_row.get("components_json", "{}")) if setup_row.get("components_json") else {},
+        "components": (
+            setup_row.get("components_json")
+            if isinstance(setup_row.get("components_json"), dict)
+            else (json.loads(setup_row.get("components_json") or "{}")
+                  if setup_row.get("components_json") else {})
+        ),
         "key_levels": levels.to_dict(orient="records") if not levels.empty else [],
     }
 
