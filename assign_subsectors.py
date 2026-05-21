@@ -150,9 +150,16 @@ SUBSECTOR_RULES = [
 ]
 
 
-def assign_subsector(industry: str | None) -> str | None:
+def assign_subsector(industry) -> str | None:
     """Map an FMP industry string to one of our curated subsectors."""
-    if not industry:
+    # Handle None, NaN, empty string, or non-string input
+    if industry is None:
+        return None
+    if isinstance(industry, float):  # pandas NaN comes through as float
+        return None
+    if not isinstance(industry, str):
+        return None
+    if not industry.strip():
         return None
     ind = industry.lower()
     for pattern, label in SUBSECTOR_RULES:
