@@ -11,6 +11,7 @@ on:
         options:
           - 'load_tickers.py'
           - 'load_eu_tickers.py'
+          - 'load_extra_tickers.py'
           - 'fmp_diagnostic.py'
           - 'refresh_data.py --full --limit 50'
           - 'refresh_data.py --full'
