@@ -21,6 +21,7 @@ import pandas as pd
 from datetime import date, timedelta
 from sqlalchemy import create_engine, text
 from dotenv import load_dotenv
+from ai_universe import AI_UNIVERSE, AI_LAYER_MAP, AI_LAYERS
 
 load_dotenv()
 
@@ -47,6 +48,13 @@ def _json_safe(obj):
             return None
         return obj
     return obj
+
+
+
+# =============================================================================
+# AI Ecosystem Universe — the scoring universe for the shortlist
+# Organized by layer of the AI stack
+# =============================================================================
 
 
 # Lazy import — only when prose generation is needed
@@ -279,13 +287,16 @@ def load_scoring_universe():
     LEFT JOIN insider_recent ir ON ir.ticker = t.ticker
     LEFT JOIN latest_fund lf    ON lf.ticker = t.ticker
     WHERE t.is_active = TRUE
-      AND t.in_sp500 = TRUE
+      AND t.ticker = ANY(:ai_tickers)
     """
 
     with engine.connect() as con:
-        df = pd.read_sql(text(sql), con)
+        df = pd.read_sql(text(sql), con,
+                         params={"ai_tickers": list(AI_UNIVERSE)})
 
-    print(f"    {len(df)} tickers loaded for scoring")
+    # Add AI stack layer
+    df["ai_layer"] = df["ticker"].map(AI_LAYER_MAP).fillna("Other")
+    print(f"    {len(df)} tickers loaded for scoring (AI universe)")
     return df
 
 
@@ -309,9 +320,39 @@ def build_lists(today=None):
     df["bear_components"] = [s[1] for s in bear_scores]
 
     def insert_list(list_type, scored_df, score_col, components_col, threshold=40):
-        ranked = scored_df[scored_df[score_col] >= threshold].sort_values(
+        # Sort by score but enforce sector diversification:
+        # max 2 per sector in top 10, max 3 per sector in top 30
+        candidates = scored_df[scored_df[score_col] >= threshold].sort_values(
             score_col, ascending=False
-        ).head(30).reset_index(drop=True)
+        )
+
+        selected = []
+        sector_count_top10 = {}
+        sector_count_all = {}
+        MAX_PER_SECTOR_TOP10 = 2
+        MAX_PER_SECTOR_TOTAL = 3
+
+        for _, row in candidates.iterrows():
+            sector = row.get("ai_layer", "Unknown") or row.get("sector", "Unknown") or "Unknown"
+            rank = len(selected) + 1
+            sc_all = sector_count_all.get(sector, 0)
+            sc_top = sector_count_top10.get(sector, 0)
+
+            # Skip if sector is over-represented
+            if sc_all >= MAX_PER_SECTOR_TOTAL:
+                continue
+            if rank <= 10 and sc_top >= MAX_PER_SECTOR_TOP10:
+                continue
+
+            selected.append(row)
+            sector_count_all[sector] = sc_all + 1
+            if rank <= 10:
+                sector_count_top10[sector] = sc_top + 1
+
+            if len(selected) >= 30:
+                break
+
+        ranked = pd.DataFrame(selected).reset_index(drop=True)
 
         if ranked.empty:
             print(f"    {list_type}: 0 candidates above threshold {threshold}")
@@ -345,7 +386,7 @@ def build_lists(today=None):
                     )
                 """), {
                     "d": today, "t": list_type, "r": i + 1,
-                    "tk": row["ticker"], "sec": row.get("sector"),
+                    "tk": row["ticker"], "sec": row.get("ai_layer") or row.get("sector"),
                     "cn": row.get("company_name"),
                     "sc": float(row[score_col]), "st": tier,
                     "rs": reason,
@@ -378,6 +419,9 @@ def build_lists(today=None):
 def build_reason_sentence(row, list_type, components):
     """Build a one-line analytical reason. Used as the row description."""
     parts = []
+    layer = row.get("ai_layer", "")
+    if layer and layer != "Other":
+        parts.append(f"{layer} layer")
     if list_type == "bullish":
         if components.get("rotation", 0) > 10:
             parts.append("Strong sector rotation tailwind")
