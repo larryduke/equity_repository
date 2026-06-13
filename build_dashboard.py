@@ -311,7 +311,7 @@ def build_lists(today=None):
     def insert_list(list_type, scored_df, score_col, components_col, threshold=40):
         ranked = scored_df[scored_df[score_col] >= threshold].sort_values(
             score_col, ascending=False
-        ).head(10).reset_index(drop=True)
+        ).head(30).reset_index(drop=True)
 
         if ranked.empty:
             print(f"    {list_type}: 0 candidates above threshold {threshold}")
